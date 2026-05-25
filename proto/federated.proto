@@ -1,0 +1,71 @@
+// Federated Learning service definition.
+//
+// 3 RPCs theo design trong ytuong.md:
+//   - GetGlobalModel: client pull model đầu round
+//   - SubmitUpdate:   client gửi weights sau khi train local
+//   - GetRoundStatus: client poll trạng thái round hiện tại
+//
+// State_dict được serialize bằng torch.save vào bytes (xem model.py).
+syntax = "proto3";
+
+package federated;
+
+service FederatedLearning {
+  rpc GetGlobalModel (RoundRequest) returns (ModelWeights);
+  rpc SubmitUpdate   (ClientUpdate) returns (AckResponse);
+  rpc GetRoundStatus (Empty)        returns (RoundStatus);
+}
+
+message Empty {}
+
+message RoundRequest {
+  int32 round_id = 1;
+  string client_id = 2;
+}
+
+message ModelWeights {
+  int32 round_id = 1;
+  bytes serialized_state_dict = 2;
+}
+
+message TimingInfo {
+  double download_ms = 1;
+  double train_ms = 2;
+  double upload_ms = 3;
+}
+
+message ClientUpdate {
+  string client_id = 1;
+  int32 round_id = 2;
+  bytes serialized_state_dict = 3;
+  int32 num_samples = 4;
+  double train_loss = 5;
+  TimingInfo timing = 6;
+
+  // Metadata gửi 1 lần (round đầu) để server ghi run_meta.json.
+  // Các round sau client có thể để rỗng.
+  string hostname = 7;
+  string gpu_name = 8;
+  string torch_version = 9;
+  string cuda_version = 10;
+}
+
+message AckResponse {
+  bool accepted = 1;
+  string message = 2;        // Nếu reject (stale round, unknown client) — lý do
+  int32 server_round = 3;    // Round hiện tại ở server (giúp client phát hiện drift)
+}
+
+message RoundStatus {
+  enum State {
+    UNKNOWN = 0;
+    WAITING = 1;        // Server chưa bắt đầu round mới
+    TRAINING = 2;       // Client nên train (đã pull model)
+    AGGREGATING = 3;    // Server đang FedAvg
+    EVALUATING = 4;     // Server đang eval global model
+    DONE = 5;           // Đã chạy đủ num_rounds_total
+  }
+  int32 current_round = 1;
+  State state = 2;
+  int32 num_rounds_total = 3;
+}

@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+*.egg-info/
+*.egg
+
+# Virtual envs
+venv/
+.venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data (downloaded MNIST, etc.)
+data/
+
+# Results (run outputs — keep folder via .gitkeep)
+results/*
+!results/.gitkeep
+
+# Model checkpoints
+*.pth
+*.pt
+*.ckpt
+
+# Logs
+*.log
+
+# Jupyter
+.ipynb_checkpoints/
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Locked deps committed separately if needed

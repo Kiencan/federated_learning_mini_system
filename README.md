@@ -1,0 +1,65 @@
+# Federated Learning Mini System
+
+Hệ thống Federated Learning hai node với giao tiếp gRPC trên MNIST + CNN nhỏ. Dự án phân tích các vấn đề distributed systems: communication overhead, bounded synchronization, straggler problem, fault tolerance, data heterogeneity.
+
+- Spec gốc: [ytuong.md](ytuong.md)
+- Kế hoạch triển khai: [plan.md](plan.md)
+
+## Hardware mục tiêu
+
+| | Máy 1 | Máy 2 |
+|---|---|---|
+| GPU | RTX 2000 Ada | RTX 2000 Ada |
+| Vai trò | Server (CPU) + Client 1 | Client 2 |
+| Kết nối | LAN | LAN |
+
+## Git workflow
+
+- `main`: trạng thái stable, đã verify chạy được trên 2 máy
+- `dev`: nhánh phát triển, mọi milestone implement ở đây trước
+- Khi milestone ổn → merge `dev` vào `main` qua PR
+
+## Tiến độ milestone
+
+- [ ] **M1** — Centralized baseline (1 máy, không gRPC)
+- [ ] **M2** — gRPC hello world qua 2 máy
+- [ ] **M3** — Server/client chạy 1 round IID
+- [ ] **M4** — Chạy 5 round IID + log CSV
+- [ ] **M5** — Thêm Non-IID partition
+- [ ] **M6** — Timeout + stale update rejection
+- [ ] **M7** — Straggler + failure experiments
+
+## Cấu trúc dự án
+
+Xem chi tiết trong [plan.md](plan.md). Cấu trúc đích:
+
+```text
+.
+├── proto/federated.proto
+├── server.py
+├── client.py
+├── model.py
+├── data_partition.py
+├── experiments.py
+├── config.yaml
+├── requirements.txt
+├── requirements.lock
+└── results/
+    └── exp_*/<run_id>/
+        ├── config.yaml
+        ├── run_meta.json
+        ├── round_log.csv
+        └── events.log
+```
+
+## Setup môi trường
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+## Chạy
+
+Sẽ cập nhật khi từng milestone hoàn thành.

@@ -1,0 +1,25 @@
+# Cấu hình chung cho centralized và federated training.
+# Centralized chỉ dùng: num_epochs (=num_rounds), batch_size, lr, seed, device.
+# Federated dùng thêm: num_rounds, local_epochs, wait_timeout, min_clients, server_addr, data_split, straggler_delay.
+
+# Training
+num_rounds: 30            # số round federated; centralized dùng làm num_epochs
+local_epochs: 2           # epochs/round trên mỗi client
+batch_size: 32
+lr: 0.01
+seed: 42                  # set cho random, numpy, torch
+
+# Hardware
+device: "cuda"            # cuda | cpu — server có thể override "cpu" để không tranh GPU
+
+# Distributed (federated only)
+wait_timeout: 15          # giây — chờ tối đa client gửi update mỗi round
+min_clients: 1            # tối thiểu để aggregate
+server_addr: "127.0.0.1:50051"  # đổi sang LAN IP khi deploy 2 máy
+
+# Experiment
+data_split: "iid"         # iid | noniid (federated only)
+straggler_delay: 0        # giây — delay nhân tạo cho client 2 (Exp 3)
+experiment_name: "exp_centralized"
+results_root: "results"
+run_id: null              # null = auto timestamp YYYY-MM-DD_HHMM

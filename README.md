@@ -54,12 +54,33 @@ Xem chi tiết trong [plan.md](plan.md). Cấu trúc đích:
 
 ## Setup môi trường
 
+**Conda (khuyến nghị)** — Python 3.11 + PyTorch CUDA 12.1:
+
+```powershell
+conda env create -f environment.yml
+conda activate fedml
+```
+
+**Hoặc venv + pip:**
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
+Verify GPU:
+
+```powershell
+python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+```
+
 ## Chạy
 
-Sẽ cập nhật khi từng milestone hoàn thành.
+### Milestone 1 — Centralized baseline
+
+```powershell
+python centralized_train.py --num-rounds 10
+```
+
+Output: `results/exp_centralized/<run_id>/{config.yaml, run_meta.json, round_log.csv}`

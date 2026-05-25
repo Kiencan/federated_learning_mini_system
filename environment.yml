@@ -1,0 +1,25 @@
+# Conda environment cho dự án Federated Learning Mini System.
+# Sử dụng:
+#   conda env create -f environment.yml
+#   conda activate fedml
+#
+# Lưu ý: PyTorch CUDA wheel được cài qua pip (PyTorch official channel ưu tiên hơn conda).
+# Nếu Máy 2 không có GPU NVIDIA, đổi --index-url thành CPU wheel: https://download.pytorch.org/whl/cpu
+
+name: fedml
+channels:
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu121
+      - torch>=2.5
+      - torchvision>=0.20
+      - grpcio>=1.60
+      - grpcio-tools>=1.60
+      - protobuf>=4.25
+      - numpy>=1.26
+      - pandas>=2.1
+      - matplotlib>=3.8
+      - pyyaml>=6.0

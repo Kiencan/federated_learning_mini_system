@@ -1,0 +1,19 @@
+# ML framework — install PyTorch theo hardware (CUDA 12.x cho RTX 2000 Ada)
+# Tham khảo: https://pytorch.org/get-started/locally/
+torch>=2.1
+torchvision>=0.16
+
+# Communication
+grpcio>=1.60
+grpcio-tools>=1.60
+protobuf>=4.25
+
+# Data + visualization
+numpy>=1.26
+pandas>=2.1
+matplotlib>=3.8
+pyyaml>=6.0
+
+# Optional — REST baseline so sánh với gRPC (Future work)
+# fastapi
+# uvicorn

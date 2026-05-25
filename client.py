@@ -97,7 +97,11 @@ def run_federated(args, cfg: dict, server_addr: str) -> None:
         # ── Bước 1: Chờ state=TRAINING ──────────────────────────────────────
         print(f"[client {client_id}] waiting for server state=TRAINING ...")
         while True:
-            status = stub.GetRoundStatus(federated_pb2.Empty(), timeout=10)
+            try:
+                status = stub.GetRoundStatus(federated_pb2.Empty(), timeout=10)
+            except grpc.RpcError as e:
+                print(f"[client {client_id}] GetRoundStatus error: {e.code()} {e.details()}")
+                sys.exit(2)
             state_name = federated_pb2.RoundStatus.State.Name(status.state)
             if status.state == federated_pb2.RoundStatus.TRAINING:
                 break
@@ -186,7 +190,7 @@ def run_federated(args, cfg: dict, server_addr: str) -> None:
             timing=federated_pb2.TimingInfo(
                 download_ms=download_ms,
                 train_ms=train_ms,
-                upload_ms=0.0,  # đo sau khi RPC xong
+                upload_ms=0.0,  # không đo được trước khi RPC gửi đi; giá trị thực ở console print
             ),
             hostname=socket.gethostname(),
             gpu_name=gpu_name,
@@ -215,7 +219,11 @@ def run_federated(args, cfg: dict, server_addr: str) -> None:
         # ── Bước 6: Poll đến DONE ────────────────────────────────────────────
         print(f"[client {client_id}] waiting for server state=DONE ...")
         while True:
-            status = stub.GetRoundStatus(federated_pb2.Empty(), timeout=10)
+            try:
+                status = stub.GetRoundStatus(federated_pb2.Empty(), timeout=10)
+            except grpc.RpcError as e:
+                print(f"[client {client_id}] GetRoundStatus error: {e.code()} {e.details()}")
+                sys.exit(2)
             state_name = federated_pb2.RoundStatus.State.Name(status.state)
             if status.state == federated_pb2.RoundStatus.DONE:
                 print(f"[client {client_id}] server state=DONE ✓")

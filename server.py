@@ -70,7 +70,8 @@ class ServerState:
     def __init__(self, cfg: dict, ctx: RunContext) -> None:
         self.cfg = cfg
         self.ctx = ctx
-        self.lock = threading.Lock()
+        self.lock = threading.Lock()           # state + received_updates
+        self._log_lock = threading.Lock()      # events.csv writes (independent)
 
         # Global model -khởi tạo có seed để reproducibility
         self.model = MnistCNN()  # CPU
@@ -115,16 +116,21 @@ class ServerState:
         message: str = "",
         num_samples: int | str = "",
     ) -> None:
-        """Append 1 row vào events.csv. KHÔNG cần giữ lock -chỉ I/O append."""
-        with self.events_path.open("a", newline="", encoding="utf-8") as f:
-            csv.writer(f).writerow([
-                datetime.now().isoformat(timespec="seconds"),
-                self.current_round,
-                event,
-                client_id,
-                message,
-                num_samples,
-            ])
+        """Append 1 row vào events.csv. Thread-safe qua self._log_lock.
+
+        Tách lock riêng (không dùng self.lock) để GetGlobalModel không phải
+        giữ main lock chỉ để log - main lock dành cho state mutation.
+        """
+        with self._log_lock:
+            with self.events_path.open("a", newline="", encoding="utf-8") as f:
+                csv.writer(f).writerow([
+                    datetime.now().isoformat(timespec="seconds"),
+                    self.current_round,
+                    event,
+                    client_id,
+                    message,
+                    num_samples,
+                ])
 
     def mark_client_seen_locked(self, client_id: str) -> None:
         """Phải được gọi khi đã giữ self.lock."""
@@ -284,7 +290,8 @@ class FederatedServicer(federated_pb2_grpc.FederatedLearningServicer):
         eval_ms = (time.perf_counter() - eval_t0) * 1000
         s.log_event("evaluation_done", message=f"accuracy={accuracy:.4f}")
 
-        # Round log row -hard-code 2 client cho M3 (per m3_plan §6 refactor note)
+        # M3: hardcoded 2 clients per m3_plan.md §6 (per-client log columns).
+        # Refactor when scaling to num_clients > 2 (long format CSV hoặc JSON column).
         wallclock = time.time() - s.round_start_time
         c0_loss, c0_n = client_info.get("client-0", (0.0, 0))
         c1_loss, c1_n = client_info.get("client-1", (0.0, 0))

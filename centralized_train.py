@@ -14,6 +14,7 @@ import torch
 import torch.nn.functional as F
 from torch import optim
 
+from aggregation import evaluate
 from data_partition import load_mnist, make_loader
 from model import MnistCNN
 from run_context import (
@@ -24,37 +25,6 @@ from run_context import (
     set_seed,
     write_run_meta,
 )
-
-
-def evaluate(model: MnistCNN, loader, device: str) -> tuple[float, float, list[float]]:
-    """Trả về (avg_loss, accuracy, per_class_accuracy)."""
-    model.eval()
-    total_loss = 0.0
-    total_correct = 0
-    total_samples = 0
-    class_correct = [0] * 10
-    class_total = [0] * 10
-
-    with torch.no_grad():
-        for x, y in loader:
-            x, y = x.to(device), y.to(device)
-            logits = model(x)
-            loss = F.cross_entropy(logits, y, reduction="sum")
-            total_loss += loss.item()
-            preds = logits.argmax(dim=1)
-            total_correct += (preds == y).sum().item()
-            total_samples += y.size(0)
-            for cls in range(10):
-                mask = y == cls
-                class_total[cls] += mask.sum().item()
-                class_correct[cls] += ((preds == y) & mask).sum().item()
-
-    avg_loss = total_loss / total_samples
-    accuracy = total_correct / total_samples
-    per_class = [
-        (class_correct[c] / class_total[c]) if class_total[c] else 0.0 for c in range(10)
-    ]
-    return avg_loss, accuracy, per_class
 
 
 def train_one_epoch(model: MnistCNN, loader, optimizer, device: str) -> float:
@@ -78,7 +48,8 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_config(args.config, overrides=cli_overrides(args))
-    cfg.setdefault("experiment_name", "exp_centralized")
+    if not args.experiment_name:
+        cfg["experiment_name"] = "exp_centralized"
     set_seed(cfg["seed"])
 
     ctx = create_run_dir(cfg, args.config)

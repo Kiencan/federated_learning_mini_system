@@ -21,8 +21,8 @@ Hệ thống Federated Learning hai node với giao tiếp gRPC trên MNIST + CN
 
 ## Tiến độ milestone
 
-- [ ] **M1** — Centralized baseline (1 máy, không gRPC)
-- [ ] **M2** — gRPC hello world qua 2 máy
+- [x] **M1** — Centralized baseline (1 máy, không gRPC) — verified 98.94% acc sau 2 epoch
+- [x] **M2** — gRPC hello world qua 2 máy — verified LAN RTT 3.5-6ms
 - [ ] **M3** — Server/client chạy 1 round IID
 - [ ] **M4** — Chạy 5 round IID + log CSV
 - [ ] **M5** — Thêm Non-IID partition
@@ -84,3 +84,20 @@ python centralized_train.py --num-rounds 10
 ```
 
 Output: `results/exp_centralized/<run_id>/{config.yaml, run_meta.json, round_log.csv}`
+
+### Milestone 2 — gRPC hello world
+
+**Máy 1** (server):
+```powershell
+python server.py --bind 0.0.0.0:50051
+```
+
+**Máy 2** (client):
+```powershell
+python client.py --client-id client-2 --server-addr <ip-may-1>:50051 --poll 5
+```
+
+Lần đầu: nếu Windows Firewall chặn, mở PowerShell Admin trên Máy 1 chạy:
+```powershell
+New-NetFirewallRule -DisplayName "FedML gRPC 50051" -Direction Inbound -Protocol TCP -LocalPort 50051 -Action Allow
+```

@@ -137,20 +137,20 @@ Các `event` type dự kiến trong M3:
 
 ## 8. Subtask breakdown
 
-| # | Subtask | File | Estimate |
-|---|---|---|---|
-| M3.1 | Refactor `server.py`: ServerState class (global_model, current_round=1, received_updates dict, state=TRAINING, lock, known_clients) | server.py | 30 min |
-| M3.2 | Implement `GetGlobalModel`: serialize state_dict, log `model_pulled` event | server.py | 15 min |
-| M3.3 | Implement `SubmitUpdate`: 4-layer validation (§5), log từng outcome vào events.csv | server.py | 45 min |
-| M3.4 | `_aggregate_and_evaluate`: FedAvg → write model state → eval CPU → log round_log.csv → set DONE → log `round_done` | server.py | 45 min |
-| M3.5 | Refactor `client.py`: training loop (poll → pull → train → submit), timing breakdown, **thoát sạch khi state=DONE** (không poll mãi) | client.py | 45 min |
-| M3.6 | Client: pick shard từ `partition_iid(seed=42, num_clients=2)`, gửi metadata (hostname/GPU/torch_ver) trong update đầu | client.py | 15 min |
-| M3.7 | Smoke test localhost (server + 2 client trên Máy 1, 3 PowerShell terminal) | (run) | 20 min |
-| M3.8 | `tests/test_stale_update.py`: script gRPC client trực tiếp gửi `round_id=99` để verify reject | tests/ | 20 min |
-| M3.9 | Cross-machine test (Máy 1 server + client-0, Máy 2 client-1) | (run) | 20 min |
-| M3.10 | Append M3 section vào `Report/milestone_report.md` + commit + push | report | 20 min |
+| # | Subtask | File | Owner | Branch | Estimate |
+|---|---|---|---|---|---|
+| M3.1 | Refactor `server.py`: ServerState class (global_model, current_round=1, received_updates dict, state=TRAINING, lock, known_clients) | server.py | **Máy 1** | `feature/m3-server-state` | 30 min |
+| M3.2 | Implement `GetGlobalModel`: serialize state_dict, log `model_pulled` event | server.py | **Máy 1** | `feature/m3-server-state` (cùng M3.1) | 15 min |
+| M3.3 | Implement `SubmitUpdate`: 4-layer validation (§5), log từng outcome vào events.csv | server.py | **Máy 1** | `feature/m3-server-validation` | 45 min |
+| M3.4 | `_aggregate_and_evaluate`: FedAvg → write model state → eval CPU → log round_log.csv → set DONE → log `round_done` | server.py | **Máy 1** | `feature/m3-server-aggregation` | 45 min |
+| M3.5 | Refactor `client.py`: training loop (poll → pull → train → submit), timing breakdown, **thoát sạch khi state=DONE** | client.py | **Máy 2** | `feature/m3-client-loop` | 45 min |
+| M3.6 | Client: pick shard từ `partition_iid(seed=42, num_clients=2)`, gửi metadata (hostname/GPU/torch_ver) trong update đầu | client.py | **Máy 2** | `feature/m3-client-loop` (cùng M3.5) | 15 min |
+| M3.7 | Smoke test localhost (server + 2 client trên Máy 1, 3 PowerShell terminal) | (run) | **Máy 1** | — (chạy sau khi merge) | 20 min |
+| M3.8 | `tests/test_stale_update.py`: script gRPC client trực tiếp gửi `round_id=99` để verify reject | tests/ | **Máy 2** | `feature/m3-stale-test` | 20 min |
+| M3.9 | Cross-machine test (Máy 1 server + client-0, Máy 2 client-1) | (run) | **Cả hai** | — (chạy sau khi tất cả merge) | 20 min |
+| M3.10 | Append M3 section vào `Report/milestone_report.md` + commit + push | report | **Máy 1** | `feature/m3-report` | 20 min |
 
-**Tổng ước tính:** ~4-4.5 giờ làm việc
+**Tổng ước tính:** ~4-4.5 giờ làm việc. **Song song hóa:** Máy 1 và Máy 2 có thể chạy đồng thời M3.1-M3.4 (Máy 1) và M3.5-M3.6 + M3.8 (Máy 2) → giảm wall-clock xuống còn ~2-2.5 giờ.
 
 ## 9. Test plan
 
@@ -223,3 +223,163 @@ Update `Report/milestone_report.md`:
 - Bảng tổng quan: M3 chuyển thành ✅ Done
 - Section "Milestone 3" với cùng cấu trúc (mục tiêu / công việc / verified / acceptance / vấn đề)
 - Cập nhật snapshot timing: LAN aggregate RTT, FedAvg duration, eval duration, training duration
+
+---
+
+## 13. Git workflow cho 2 dev
+
+**Mô hình:** Feature branch + Pull Request + review trước khi merge vào `dev`.
+
+```text
+main (stable)
+  ├── dev (integration)
+  │     ├── feature/m3-server-state       (Máy 1)
+  │     ├── feature/m3-server-validation  (Máy 1)
+  │     ├── feature/m3-server-aggregation (Máy 1)
+  │     ├── feature/m3-client-loop        (Máy 2)
+  │     ├── feature/m3-stale-test         (Máy 2)
+  │     └── feature/m3-report             (Máy 1)
+```
+
+### Quy ước branch naming
+
+`feature/<milestone>-<scope>` — ví dụ `feature/m3-client-loop`, `feature/m3-stale-test`. Một feature branch nên chứa 1 logical unit (có thể gồm nhiều subtask liên quan như M3.1+M3.2).
+
+### Quy trình per feature (cả 2 máy đều làm tương tự)
+
+```powershell
+# 1. Sync dev mới nhất
+git checkout dev
+git pull origin dev
+
+# 2. Tạo feature branch
+git checkout -b feature/m3-client-loop
+
+# 3. Code + commit (nhiều commit nhỏ OK)
+# ... edit files ...
+git add client.py
+git commit -m "M3.5: client training loop with timing breakdown"
+
+# 4. Push lên GitHub
+git push -u origin feature/m3-client-loop
+
+# 5. Mở Pull Request trên GitHub: feature/m3-client-loop → dev
+#    Title: "M3.5+M3.6: client training loop + shard pick"
+#    Description: mô tả thay đổi, test đã chạy, link tới subtask trong m3_plan.md
+```
+
+### Quy trình review (Máy 1 = reviewer)
+
+Khi Máy 2 push PR:
+
+1. **Máy 1 đọc diff trên GitHub** (Files changed tab)
+2. **Pull về local để test:**
+   ```powershell
+   git fetch origin
+   git checkout feature/m3-client-loop
+   # Test thử
+   ```
+3. **Comment trên PR**: comment inline trên dòng cụ thể hoặc general comment
+4. **Nếu cần sửa:** Máy 2 commit thêm vào cùng branch, push, Máy 1 re-review
+5. **Khi đồng ý:** Máy 1 click "Merge pull request" trên GitHub (chọn "Create a merge commit" để giữ history rõ)
+
+### Sau khi merge
+
+**Cả 2 máy** sync lại để pull các merge mới nhất:
+
+```powershell
+git checkout dev
+git pull origin dev
+# Xóa branch local đã merge (optional)
+git branch -d feature/m3-client-loop
+```
+
+### Conflict resolution
+
+Vì server.py (Máy 1) và client.py (Máy 2) là **file khác nhau**, conflict gần như không xảy ra. Nếu có:
+
+- `proto/federated.proto`: **LOCK lại đã**, không sửa trong M3 (đã đầy đủ schema từ M2)
+- `config.yaml`: nếu cần thêm key, coordinate trước qua Slack/chat
+- `Report/m3_plan.md`: chỉ Máy 1 edit
+- Nếu thực sự conflict: ai merge sau phải rebase và resolve, push lại
+
+### Review checklist (rút gọn)
+
+Reviewer (Máy 1) check trước khi approve:
+
+- [ ] Code chạy được (đã test local)
+- [ ] Theo đúng spec trong m3_plan.md (validation order, schema CSV, ...)
+- [ ] Không thêm scope ngoài subtask
+- [ ] Không sửa file của owner khác (vd Máy 2 không sửa server.py)
+- [ ] Commit message rõ ràng, có reference subtask (M3.5, M3.6, ...)
+
+---
+
+## 14. Parallel dev — cách Máy 1 và Máy 2 làm song song không block nhau
+
+**Tin tốt:** Proto schema đã lock từ M2 → **server-side và client-side phụ thuộc duy nhất vào proto**, không phụ thuộc implementation của nhau. Hai bên code song song được.
+
+### Critical path
+
+```text
+M2 done (proto locked) ─┬─→ Máy 1: M3.1 → M3.2 → M3.3 → M3.4 ─┐
+                        │                                       ├─→ M3.7 localhost test (Máy 1)
+                        └─→ Máy 2: M3.5 + M3.6 ────────────────┤
+                        └─→ Máy 2: M3.8 stale test ────────────┘
+                                                                  ↓
+                                                          M3.9 cross-machine (cả 2 máy)
+                                                                  ↓
+                                                          M3.10 report (Máy 1)
+```
+
+### Integration points (chỗ 2 bên gặp nhau)
+
+| Contract | Bên định nghĩa | Bên consume |
+|---|---|---|
+| `GetGlobalModel` request/response schema | proto (đã có) | Máy 1 implement, Máy 2 gọi |
+| `SubmitUpdate` validation rules | m3_plan.md §5 | Máy 1 implement, Máy 2 gọi đúng schema |
+| `RoundStatus.State` enum | proto (đã có) | Máy 1 set, Máy 2 đọc |
+| `events.csv` schema | m3_plan.md §7 | Máy 1 ghi (server-side) |
+| `round_log.csv` schema | m3_plan.md §6 | Máy 1 ghi |
+| Client shard split (`--shard-id`, `--num-shards`, `seed=42`) | m3_plan.md §4 | Máy 2 implement |
+
+### Khuyến nghị cho Máy 2 (làm song song khi Máy 1 chưa xong server)
+
+Máy 2 có thể test client.py mà không cần server thật bằng cách:
+
+**Option A — Dùng server M2 (đã có):** Server hiện tại trả `RoundStatus(round=0, state=WAITING)`. Client của Máy 2 có thể test phần poll-and-detect-state. Còn `GetGlobalModel`/`SubmitUpdate` sẽ trả UNIMPLEMENTED — client phải handle lỗi này gracefully (log + retry hoặc exit).
+
+**Option B — Mock server tối giản:** Máy 2 viết `tests/mock_server.py` ~30 dòng trả mock data cho cả 3 RPC. Khi server thật merge, bỏ mock đi. Cách này test được full loop nhưng phát sinh code throwaway.
+
+**→ Khuyến nghị Option A** cho M3: nhanh hơn, không cần code throwaway. Máy 2 chỉ cần verify client connect được + tracking timing + exit khi state=DONE. Phần training loop thật sẽ verify ở M3.7 sau khi merge.
+
+### Thứ tự merge khuyến nghị
+
+1. **First**: `feature/m3-client-loop` (Máy 2) — chỉ thêm code, không phá M2 server. Merge sớm để Máy 1 dev server có client mới để test
+2. **Second**: `feature/m3-server-state` + `feature/m3-server-validation` + `feature/m3-server-aggregation` (Máy 1) — có thể gộp 1 PR lớn hoặc 3 PR nhỏ tùy mức độ
+3. **Third**: `feature/m3-stale-test` (Máy 2) — cần server validation đã merge để test thật
+4. **Final**: `feature/m3-report` (Máy 1) — sau khi M3.7 + M3.9 đã pass
+
+### Commands cheatsheet cho Máy 2
+
+```powershell
+# Setup lần đầu (đã làm xong ở M2)
+conda activate fedml
+
+# Sync trước khi bắt đầu work
+cd <repo>
+git checkout dev
+git pull origin dev
+
+# Bắt đầu feature
+git checkout -b feature/m3-client-loop
+
+# Test client với server M2 đang chạy trên Máy 1
+python client.py --client-id client-2 --server-addr 192.168.2.30:50051 --poll 3
+
+# Khi xong, push
+git add client.py
+git commit -m "M3.5: client training loop"
+git push -u origin feature/m3-client-loop
+# → Mở PR trên GitHub
+```

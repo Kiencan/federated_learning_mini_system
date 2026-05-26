@@ -38,31 +38,35 @@ data_split: "iid"        # iid | noniid — client đọc và dispatch
 
 Nếu user CLI `--data-split noniid` → override config.
 
-**Smoke run M5 commands** (lưu ý 2 client cùng `--data-split noniid`):
+**Smoke run M5 commands** (cả **server** lẫn 2 client đều cần `--data-split noniid`):
 
 ```powershell
-# Server
-python server.py --num-rounds 5 --experiment-name exp_federated_noniid_smoke --run-id m5_local
+# Server — cần --data-split để snapshot config phản ánh đúng Non-IID
+python server.py --num-rounds 5 --data-split noniid --experiment-name exp_federated_noniid_smoke --run-id m5_local
 
-# Client 0
+# Client 0 (digits 0-4)
 python client.py --client-id client-0 --shard-id 0 --num-shards 2 --data-split noniid
 
-# Client 1
+# Client 1 (digits 5-9)
 python client.py --client-id client-1 --shard-id 1 --num-shards 2 --data-split noniid
 ```
 
-> **Lưu ý quan trọng:** Server không biết clients đang dùng IID hay Non-IID — chỉ aggregate weights. User phải đảm bảo cả 2 client cùng `--data-split`. Nếu lệch (1 IID + 1 Non-IID), kết quả vô nghĩa nhưng server không phát hiện. **Mismatch validation defer cho M6+** nếu cần.
+> **Tại sao server cần `--data-split` dù không dùng để aggregate:** server snapshot `config.yaml` vào `run_dir`. Nếu server không nhận CLI flag, snapshot sẽ ghi `data_split: iid` mặc dù client thực tế chạy Non-IID. Sau này nhìn `results/.../config.yaml` sẽ sai. Server đọc giá trị nhưng KHÔNG dùng để xử lý — chỉ để log.
+
+> **Lưu ý quan trọng:** Server vẫn không validate client `data_split` khớp với mình. User phải đảm bảo cả 2 client + server cùng `--data-split`. Mismatch validation defer cho M6+.
 
 ## 4. Design decisions
 
 | Quyết định | Lựa chọn | Lý do |
 |---|---|---|
-| Thêm `--data-split` flag client | CLI > config.yaml | Đã có pattern từ M3/M4; người dùng dễ chuyển giữa IID/Non-IID |
-| Dispatch ở đâu | Trong client `run_federated`, ngay sau `load_mnist()` | Thay 1 dòng `partition_iid(...)` thành `if/else` |
-| Validation `noniid` requires `num_shards=2` | Raise `ValueError` rõ ràng nếu sai | `partition_noniid_pathological` đã raise nhưng client wrap với message rõ hơn |
-| Server có biết Non-IID không? | KHÔNG (data-agnostic) | FedAvg server-side không quan tâm partition — đúng design federated |
-| Server `--experiment-name` cho Non-IID | User pass `exp_federated_noniid_smoke` | Tránh override accidentally `exp_federated_iid_smoke` |
+| Thêm `--data-split` flag | Đưa vào `build_cli_parser()` chung ở `run_context.py` → cả 3 script (server, client, centralized) đều nhận | Tránh `args.data_split` AttributeError khi `cli_overrides()` map nó; server snapshot config đúng |
+| Dispatch partition ở đâu | Trong client `run_federated`, ngay sau `load_mnist()` | Thay 1 dòng `partition_iid(...)` thành `if/else` |
+| Validation `noniid` requires `num_shards=2` | Raise rõ ràng + exit code 4 | `partition_noniid_pathological` đã raise nhưng client wrap với message rõ hơn |
+| Validation `0 <= shard_id < num_shards` | Check đầu `run_federated` cho **cả IID lẫn Non-IID** | `shards[shard_id]` văng `IndexError` không thân thiện nếu user sai (vd `--shard-id 2 --num-shards 2`) |
+| Server **có dùng** `data_split` không? | KHÔNG để aggregate (data-agnostic), CÓ để snapshot config | FedAvg không quan tâm partition; nhưng `run_dir/config.yaml` cần phản ánh đúng giá trị run thật |
+| Server `--experiment-name` cho Non-IID | User pass `exp_federated_noniid_smoke` | Tránh override accidentally folder `exp_federated_iid_smoke` |
 | Comparison IID vs Non-IID | Manual analysis CSV side-by-side | Tự động compare là Exp 2 phase, không phải M5 |
+| Cùng config cho fair comparison | M5.5 phải dùng IID run với **cùng** `num_rounds`, `local_epochs`, `batch_size`, `lr`, `seed`, 2 clients | M4.4 đã smoke với `num_rounds=5, local_epochs=2, batch=32, lr=0.01, seed=42` — match được; nếu khác phải rerun IID |
 
 ## 5. Subtask breakdown
 
@@ -79,7 +83,33 @@ python client.py --client-id client-1 --shard-id 1 --num-shards 2 --data-split n
 
 ## 6. Client implementation (M5.2) — pseudocode
 
-Trong `run_federated`, thay đoạn setup data hiện tại:
+### 6.1 `run_context.py` — thêm `--data-split` vào shared parser
+
+Để **server + client + centralized đều nhận** flag (server cần để snapshot config, client cần để dispatch):
+
+```python
+# Trong build_cli_parser() ở run_context.py
+parser.add_argument(
+    "--data-split",
+    choices=["iid", "noniid"],
+    default=None,
+    help="data partition mode (override config.yaml data_split). "
+         "Server: chỉ snapshot vào config; Client: dispatch partition function.",
+)
+
+# Trong cli_overrides()
+def cli_overrides(args):
+    return {
+        # ... existing keys ...
+        "data_split": args.data_split,
+    }
+```
+
+→ Vì flag đã ở parser chung, `args.data_split` luôn tồn tại (defaults None) → an toàn cho mọi script.
+
+### 6.2 `client.py` — dispatch + validation
+
+Thay đoạn setup data hiện tại:
 
 ```python
 # HIỆN TẠI (M4):
@@ -97,11 +127,12 @@ train_set, _ = load_mnist(data_root=cfg.get("data_root", "./data"))
 data_split = cfg.get("data_split", "iid")
 if data_split == "noniid":
     if args.num_shards != 2:
-        print(f"[client {client_id}] ERROR: noniid yêu cầu --num-shards 2, got {args.num_shards}")
+        print(f"[client {client_id}] ERROR: noniid requires --num-shards 2, got {args.num_shards}")
         sys.exit(4)
     shards = partition_noniid_pathological(train_set, num_clients=2)
-    print(f"[client {client_id}] split=noniid (pathological): shard {args.shard_id} = digits "
-          f"{'0-4' if args.shard_id == 0 else '5-9'}")
+    digit_range = "0-4" if args.shard_id == 0 else "5-9"
+    print(f"[client {client_id}] split=noniid (pathological): "
+          f"shard {args.shard_id} = digits {digit_range}")
 elif data_split == "iid":
     shards = partition_iid(train_set, num_clients=args.num_shards, seed=cfg["seed"])
     print(f"[client {client_id}] split=iid: shard {args.shard_id}/{args.num_shards}")
@@ -109,29 +140,26 @@ else:
     print(f"[client {client_id}] ERROR: unknown data_split={data_split!r}, expected iid|noniid")
     sys.exit(4)
 
+# Validation cho CẢ IID lẫn Non-IID: shard_id phải trong khoảng hợp lệ
+if not (0 <= args.shard_id < len(shards)):
+    print(f"[client {client_id}] ERROR: --shard-id {args.shard_id} out of range "
+          f"[0, {len(shards) - 1}] (split={data_split}, num_shards={args.num_shards})")
+    sys.exit(4)
+
 shard = shards[args.shard_id]
 ```
 
-CLI parser thêm:
+→ `--data-split` flag được pickup từ shared `build_cli_parser` (không thêm riêng ở client).
 
-```python
-parser.add_argument(
-    "--data-split",
-    choices=["iid", "noniid"],
-    default=None,
-    help="data partition mode (override config.yaml data_split)",
-)
-```
+### 6.3 Validation matrix
 
-`cli_overrides()` trong `run_context.py` cần map thêm:
-
-```python
-"data_split": args.data_split,
-```
-
-→ Nếu CLI không passed (None), config value giữ nguyên; nếu passed, override.
-
-> Lưu ý: kiểm tra `build_cli_parser` ở `run_context.py` đã có `--data-split` chưa. **Nếu chưa**, thêm vào parser chung hoặc add ở client.py riêng — Máy 2 quyết định khi implement (tránh duplication nếu sau này server cũng cần).
+| `data_split` | `num_shards` | `shard_id` | Kết quả |
+|---|---|---|---|
+| `iid` | bất kỳ ≥ 1 | hợp lệ | ✓ |
+| `iid` | 2 | 2 (vd) | exit 4 "out of range" |
+| `noniid` | 2 | 0 hoặc 1 | ✓ |
+| `noniid` | 3 | bất kỳ | exit 4 "noniid requires --num-shards 2" |
+| `foo` | bất kỳ | bất kỳ | exit 4 "unknown data_split" (hoặc argparse `choices=` reject sớm) |
 
 ## 7. Test plan
 
@@ -177,12 +205,14 @@ python client.py --client-id client-0 --shard-id 0 --num-shards 2 --data-split f
 - [ ] 5 round Non-IID chạy end-to-end không stuck (localhost + cross-machine)
 - [ ] `round_log.csv` đủ 5 row, output đúng folder `exp_federated_noniid_smoke/`
 - [ ] **Client-0 nhận data chỉ digits 0-4, Client-1 chỉ 5-9** (verified qua log size hoặc print)
-- [ ] **Accuracy round 5 ≥ 70%** (acceptance NỚI hơn IID — Non-IID khó hội tụ)
-- [ ] **Per-class accuracy có lệch rõ rệt** so với IID (verify qua compare)
-- [ ] Loss giảm qua các round (cải thiện có giảm, không nhất thiết bằng IID rate)
+- [ ] **Accuracy round 5 ≥ 70%** (acceptance NỚI hơn IID — Non-IID khó hội tụ). Nếu <70% nhưng ≥50%, xem §9 risk 1 trước khi kết luận bug.
+- [ ] **Per-class accuracy được log và so sánh** với IID baseline. Ghi nhận chênh lệch nếu có; KHÔNG fail M5 nếu pattern lệch không khớp expectation cụ thể (4, 5 thấp) — depend on seed/hyperparameter.
+- [ ] Loss giảm qua các round (cải thiện có giảm, không nhất thiết bằng IID rate, có thể dao động)
 - [ ] Client thoát sạch sau round cuối
 - [ ] Validation: `noniid` + `num_shards != 2` → exit code 4 với message rõ
-- [ ] **Comparison table IID vs Non-IID** xuất hiện trong M5 section của milestone_report
+- [ ] Validation: `shard_id` ngoài range → exit code 4 (cả IID lẫn Non-IID)
+- [ ] Server snapshot `config.yaml` ghi đúng `data_split: noniid` (verify bằng `cat results/.../config.yaml`)
+- [ ] **Comparison table IID vs Non-IID** xuất hiện trong M5 section, **dùng IID run cùng cấu hình** (xem §10)
 
 ## 9. Rủi ro & finding kỳ vọng
 
@@ -193,7 +223,11 @@ python client.py --client-id client-0 --shard-id 0 --num-shards 2 --data-split f
    - Client-1 ngược lại
    - FedAvg average 2 model bias → global model dao động, hội tụ chậm
    - Kỳ vọng: ~80-90% round 5 (so với 99.2% IID)
-   - Nếu accuracy < 50% → có thể bug serialization hoặc partition; verify
+   
+   **Quy trình debug nếu accuracy thấp hơn kỳ vọng:**
+   - **< 50%:** nghi bug nghiêm trọng. Verify partition (in `len(shard)` + class distribution), verify state_dict serialization, verify events.csv không có reject lạ. Có thể là model bị reset, FedAvg bị bypass, hoặc partition trả empty.
+   - **50% ≤ acc < 70%:** **chưa nghi bug ngay**. Kiểm tra: (a) shard size đúng (mỗi shard ~30k), (b) per-class accuracy có pattern hợp lý (vd lớp 0-4 cao trên client-0's local view), (c) train_loss có giảm. Nếu system metrics đúng → ghi nhận "Non-IID rất khó hội tụ với config hiện tại" và pass M5. Hyperparameter tuning (lr, local_epochs) là Exp 2 scope, không phải M5.
+   - **≥ 70%:** pass acceptance.
 
 2. **Per-class accuracy mất cân bằng** là **finding chính** cho báo cáo:
    - Lớp transition (4, 5) khó hội tụ vì rơi vào ranh giới mỗi client
@@ -210,13 +244,35 @@ python client.py --client-id client-0 --shard-id 0 --num-shards 2 --data-split f
 
 ## 10. Sau M5 xong
 
-Update `Report/milestone_report.md`:
+### Comparison config — MUST match for fair compare
+
+Khi so sánh IID vs Non-IID, **bắt buộc cùng cấu hình** để chênh lệch đến từ partition, không phải hyperparameter:
+
+| Param | M4.4 IID baseline | M5 Non-IID |
+|---|---|---|
+| `num_rounds` | 5 | 5 |
+| `local_epochs` | 2 (default) | 2 |
+| `batch_size` | 32 | 32 |
+| `lr` | 0.01 | 0.01 |
+| `seed` | 42 | 42 |
+| `min_clients` | 2 | 2 |
+| Num clients | 2 | 2 |
+| Setup | Cross-machine (Máy 1 + Máy 2) | Cross-machine (Máy 1 + Máy 2) |
+
+**M4.4 đã chạy đúng config trên** → có thể tái sử dụng `results/exp_federated_iid_smoke/m44_cross/` làm IID baseline. **Không cần rerun IID** nếu Non-IID dùng cùng config.
+
+Nếu vì lý do nào đó M5 phải đổi config (vd seed khác): **rerun IID smoke trước** rồi so sánh với run mới đó.
+
+### Update `Report/milestone_report.md`
+
 - Overview: M5 → ✅ Done
 - Section M5 với **comparison table IID vs Non-IID**:
-  - Accuracy curve 5 round (2 cột)
-  - Per-class accuracy round 5 (10 lớp × 2 cột)
-  - Round wallclock (kỳ vọng giống nhau)
-- Bước tiếp theo → M6 (WAIT_TIMEOUT + dynamic min_clients)
+  - **Accuracy curve 5 round** (2 cột side-by-side)
+  - **Per-class accuracy round 5** (10 lớp × 2 cột) — finding chính
+  - **Round wallclock** (kỳ vọng giống nhau ~12.7s cross-machine — verify Non-IID không slow hơn vì compute cost không đổi)
+  - **Train loss per client** (lưu ý: Non-IID train_loss có thể RẤT thấp vì overfit 5 lớp local, không phản ánh global model performance — "client drift" phenomenon)
+- Discussion: ý nghĩa cho **Experiment 2** của báo cáo cuối kỳ
+- Bước tiếp theo → M6 (WAIT_TIMEOUT + dynamic `min_clients=1` mở lại cho fault tolerance)
 
 **Sau M5, ta có dữ liệu cho Experiment 2** — quan trọng nhất của báo cáo về Data Heterogeneity (§7.5 ytuong.md).
 

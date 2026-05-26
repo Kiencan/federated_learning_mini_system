@@ -20,6 +20,10 @@ import socket
 import sys
 import time
 
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
 import grpc
 import torch
 import torch.nn.functional as F

@@ -67,24 +67,48 @@ M4 smoke: `python server.py --num-rounds 5`. Sau khi pass: chạy `--num-rounds 
 
 ## 6. Client refactor (M4.2) — pseudocode
 
+**Setup 1 lần** (load MNIST + shard + DataLoader); **per-round** tạo lại model + optimizer:
+
 ```python
 def run_federated(args, cfg, server_addr):
-    # ... setup channel, stub, load data (1 lần) ...
+    # ── Setup 1 LẦN trước outer loop ────────────────────────────────
+    channel, stub = open_grpc_channel(server_addr)
+    train_set, _ = load_mnist(...)
+    shards = partition_iid(train_set, num_clients=args.num_shards, seed=cfg["seed"])
+    shard = shards[args.shard_id]
+    loader = make_loader(shard, batch_size=cfg["batch_size"], shuffle=True)
+    device = setup_device(cfg)
+
+    # ── Outer multi-round loop ──────────────────────────────────────
     last_completed_round = 0
     while True:
-        # Poll cho đến khi có round mới hoặc DONE
         status = wait_for_new_round_or_done(stub, last_completed_round)
         if status.state == DONE:
             break
         round_id = status.current_round
 
-        # Pull → train → submit
-        model = pull_global_model(stub, round_id)
-        timings = train_local_and_submit(model, loader, optimizer, round_id)
+        # Per-round: fresh model + fresh optimizer
+        model = MnistCNN()                                       # mới mỗi round
+        model_resp = stub.GetGlobalModel(round_id=round_id, ...)
+        load_state_dict_from_bytes(model, model_resp.serialized_state_dict)
+        model.to(device)
+        optimizer = torch.optim.SGD(model.parameters(), lr=cfg["lr"], momentum=0.9)
+
+        # Train + submit
+        last_loss, num_samples, timings = train_local(model, loader, optimizer, ...)
+        update = build_update(model, round_id, num_samples, last_loss, timings)
+        ack = stub.SubmitUpdate(update, timeout=120)
+
+        # Reject handling — exit luôn, không loop tiếp
+        if not ack.accepted:
+            print(f"[client] ERROR: rejected at round {round_id}: "
+                  f"{ack.message} (server_round={ack.server_round})")
+            sys.exit(3)
+
         last_completed_round = round_id
 
-    # Summary
-    print(timing summary)
+    # Summary cuối
+    print_total_timing_summary()
 
 
 def wait_for_new_round_or_done(stub, last_completed_round):
@@ -94,26 +118,32 @@ def wait_for_new_round_or_done(stub, last_completed_round):
             return status
         if status.state == TRAINING and status.current_round > last_completed_round:
             return status
+        # AGGREGATING / EVALUATING / TRAINING(cùng round đã submit) — chờ tiếp
         time.sleep(POLL_INTERVAL_SEC)
 ```
 
 **Edge cases:**
-- Server đang AGGREGATING/EVALUATING giữa round N và N+1 → client poll tiếp
-- Server set DONE ngay sau round cuối (không pass qua TRAINING của round N+1) → loop thấy DONE, thoát
-- Client mới connect mid-experiment (round 3 đang chạy) → `last_completed_round=0`, thấy `current_round=3 > 0`, start luôn round 3 (chấp nhận được — không bắt buộc tham gia từ round 1)
+- Server đang `AGGREGATING`/`EVALUATING` giữa round N và N+1 → client poll tiếp
+- Server set `DONE` ngay sau round cuối (không pass qua TRAINING round N+1) → loop thấy DONE, thoát
+- **Client mới connect mid-experiment** (vd round 3 đang chạy): `last_completed_round=0`, thấy `current_round=3 > 0`, sẽ join round 3 nếu state đang `TRAINING`. **M4 không hỗ trợ "catch up"** — không train lại round 1 và 2. Nếu khi connect server đang `AGGREGATING`/`EVALUATING`, client phải chờ đến round tiếp theo (acceptable).
+- **Update bị reject**: bất kỳ lý do nào (stale_round, state_not_training, duplicate) → client print lý do + `server_round` rồi `sys.exit(3)`. **Không retry, không tiếp tục loop** — tránh log nhiễu và indicate bug rõ ràng.
 
 ## 7. Test plan
 
-### 7.1 Server verify (Máy 1, không cần Máy 2)
+### 7.1 Server sanity-check (Máy 1)
+
+`tests/_smoke_server.py` (từ M3) **expect server DONE ngay sau round 1** → KHÔNG thể chạy với `--num-rounds 3` (sẽ false-fail vì server đang `TRAINING round=2`).
+
+**Cách 1 (chọn cho M4):** chạy với `--num-rounds 1` để sanity-check server M3 vẫn không bị broken sau khi merge M4 changes (M4 chỉ sửa client.py — server không đổi, nên test phải vẫn pass).
 
 ```powershell
-python server.py --num-rounds 3
-# Trong terminal khác:
+python server.py --num-rounds 1 --run-id sanity_m4
+# Terminal khác:
 python tests\_smoke_server.py
-# Smoke chỉ chạy round 1 nhưng verify server không crash khi advance round
+# All 9 cases vẫn phải pass
 ```
 
-Không acceptance — chỉ smoke. Verify thật ở 7.2/7.3.
+**Cách 2 (optional, nếu muốn server-side multi-round test):** viết `tests/_smoke_server_multiround.py` gửi update cho round 1 → wait round 2 → gửi update round 2 → ... đến round N → assert DONE. Không bắt buộc cho M4 — multi-round verification sẽ ngầm pass khi M4.3 chạy với client thật.
 
 ### 7.2 Localhost smoke 5 round (M4.3, sau khi M4.2 merge)
 
@@ -131,31 +161,37 @@ python client.py --client-id client-1 --shard-id 1 --num-shards 2
 Kỳ vọng:
 - 5 round chạy liên tiếp không stuck, mỗi round ~20s localhost
 - `round_log.csv` có 5 row
-- Accuracy round 1 ≈ 98.5%, round 5 kỳ vọng ≥ 99%
+- Round 1 typically đạt accuracy cao (M3 cho thấy ~98.5%) **nhưng không phải acceptance cứng** — chỉ acceptance là round 5 ≥95%
+- Loss/accuracy có **xu hướng cải thiện** qua 5 round (không nhất thiết monotonic — SGD/shuffle/FedAvg có dao động nhẹ)
+- Không có **collapse** bất thường (accuracy tụt mạnh nhiều round liên tiếp)
 - Client thoát sạch sau round 5 (thấy DONE)
 
 ### 7.3 Cross-machine 5 round (M4.4)
 
 Như M3.9 nhưng `--num-rounds 5`. Round wallclock cross-machine kỳ vọng ~25s × 5 = 2 phút.
 
-### 7.4 (Bonus) Full experiment 30 round (M4.5)
+### 7.4 (Bonus) Full experiment 30 round (M4.5) — **không tính vào M4 acceptance**
+
+M4 đóng khi 5 round localhost + cross-machine pass và log đúng. 30 round là dữ liệu cho **Experiment 1** (so với centralized 30 epoch ở M1), thực hiện sau M4 chính thức done. Không gắn vào M4.6 milestone report.
 
 ```powershell
 python server.py --num-rounds 30 --experiment-name exp_federated_iid --run-id baseline
 # 2 client cross-machine
 ```
 
-Output sẽ là **baseline thật cho Experiment 1** (so với centralized 30 epoch đã chạy ở M1). Có thể defer sang phase Experiments — không bắt buộc M4 acceptance.
+Output → `results/exp_federated_iid/baseline/` sẽ là dataset đầu vào cho phase Experiments + báo cáo cuối kỳ.
 
 ## 8. Acceptance criteria
 
 - [ ] 5 round liên tiếp chạy end-to-end không stuck (localhost + cross-machine)
 - [ ] `round_log.csv` có **đúng 5 row**, mỗi row đầy đủ cột (accuracy, per-class, timings)
 - [ ] `events.csv` có 5 chu kỳ events đầy đủ (5x `round_done`, etc.)
-- [ ] Accuracy **không giảm** giữa các round (monotonic tăng hoặc plateau)
-- [ ] Accuracy round 5 ≥ 95% (vượt qua noise; kỳ vọng ~99%)
+- [ ] **Loss/accuracy có xu hướng cải thiện** qua 5 round (không yêu cầu monotonic — dao động nhẹ là OK)
+- [ ] **Không có collapse** bất thường (accuracy tụt mạnh nhiều round liên tiếp)
+- [ ] **Accuracy round 5 ≥ 95%** (acceptance cứng duy nhất về metric)
 - [ ] Client thoát sạch sau round cuối, không poll vô tận
-- [ ] Cross-machine timing: round wallclock relatively stable (~20-25s mỗi round, không có round nào blow up)
+- [ ] Client exit code = 3 nếu update bị reject (test bằng cách stop server giữa chừng → client gặp lỗi → exit clean)
+- [ ] Cross-machine timing: round wallclock relatively stable (~20-25s mỗi round, không có round nào blow up bất thường)
 
 ## 9. Rủi ro & lưu ý
 

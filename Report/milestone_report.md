@@ -12,7 +12,7 @@ Tài liệu này theo dõi kết quả thực hiện từng milestone của dự
 |---|---|---|---|
 | M1 | Centralized baseline (1 máy, không gRPC) | ✅ Done | `49734cb` |
 | M2 | gRPC hello world qua 2 máy | ✅ Done | `ada1e41` → `b2bd2fe` |
-| M3 | Server/client chạy 1 round IID | ⏳ Pending | — |
+| M3 | Server/client chạy 1 round IID | ✅ Done | `a99cab0` → `c05a049` → `3eef9ec` |
 | M4 | Chạy 5 round IID + log CSV | ⏳ Pending | — |
 | M5 | Thêm Non-IID partition | ⏳ Pending | — |
 | M6 | Timeout + stale update rejection | ⏳ Pending | — |
@@ -20,12 +20,12 @@ Tài liệu này theo dõi kết quả thực hiện từng milestone của dự
 
 **Hardware đang dùng:**
 - Máy 1: Windows, NVIDIA RTX 2000 Ada Generation, CUDA 12.1, LAN IP `192.168.2.30`
-- Máy 2: Windows, NVIDIA RTX 2000 Ada Generation, CUDA 12.1
+- Máy 2: Windows, NVIDIA RTX 2000 Ada Generation, CUDA 12.6
 - Kết nối: LAN
 
 **Môi trường:**
 - Conda env `fedml` Python 3.11.15
-- PyTorch 2.5.1+cu121 · torchvision 0.20.1+cu121
+- PyTorch — Máy 1: `2.5.1+cu121`; Máy 2: `2.12.0+cu126` (minor drift, không ảnh hưởng FedAvg)
 - grpcio 1.80.0 · protobuf 6.33.6
 - numpy 2.4.4 · pandas 3.0.3 · matplotlib 3.10.9 · pyyaml 6.0.3
 
@@ -235,16 +235,166 @@ c2d85bd (origin/main, main)        Initial commit: project spec and implementati
 
 ---
 
-## Bước tiếp theo (M3)
+## Milestone 3 — 1 Round Federated IID End-to-End
 
-Implement 1 round federated end-to-end:
+### Mục tiêu
 
-1. Server state machine (`WAITING → TRAINING → AGGREGATING → EVALUATING → DONE`)
-2. `GetGlobalModel`: trả state_dict hiện tại, validate `round_id`
-3. `SubmitUpdate`: nhận weights, validate `round_id`/`client_id`, lưu vào buffer
-4. FedAvg aggregate khi đủ `MIN_CLIENTS`
-5. Server evaluate trên test set (CPU, không tranh GPU với Client 1)
-6. Client training loop: poll status → pull model → train local 1-2 epoch → submit update
-7. `round_log.csv` per-round: accuracy, loss, timing breakdown (download/train/upload/wait)
+Chạy thành công 1 round Federated Learning từ đầu đến cuối: server gửi global model → 2 client (mỗi máy 1 client) train trên IID shard riêng → server aggregate bằng FedAvg → evaluate trên test set. Verify cả localhost (Máy 1) lẫn cross-machine (Máy 1 + Máy 2). Đặt nền cho M4+ chỉ cần thêm tính năng.
 
-Sau M3, 80% logic federated đã có; M4-M7 chỉ thêm tính năng (multi-round, Non-IID, timeout/stale, fault tolerance).
+> Tài liệu plan chi tiết: [m3_plan.md](m3_plan.md)
+
+### Công việc đã làm
+
+**Phân chia 2 dev qua 3 feature branch (collaboration workflow đầu tiên):**
+
+| Branch | Owner | Subtasks | Merged |
+|---|---|---|---|
+| `feature/m3-server` | Máy 1 | M3.1 ServerState, M3.2 GetGlobalModel, M3.3 SubmitUpdate (4-layer validation), M3.4 _aggregate_and_evaluate | `c05a049` |
+| `feature/m3-client-loop` | Máy 2 | M3.5 client training loop, M3.6 shard pick + metadata, fix(B1) Windows UTF-8 | `a99cab0` |
+| `feature/m3-stale-test` | Máy 2 | M3.8 stale update test (4 case) | `3eef9ec` |
+
+Mỗi branch có PR review từ Máy 1 trước khi merge. Bắt được 4 issues qua review (R1 race condition, R5 missing comment, B1 encoding, một self-fix grpc.RpcError handling từ Máy 2). Branch xóa sau merge để giữ git log gọn.
+
+**File mới / sửa lớn:**
+
+```text
+aggregation.py            (new) FedAvg + evaluate shared module
+server.py                 (rewrite) ServerState + 3 RPC + sync FedAvg+eval
+client.py                 (rewrite) poll → pull → train → submit → poll DONE
+centralized_train.py      (refactor) import evaluate từ aggregation
+config.yaml               (update) min_clients=2, expected_client_ids whitelist
+tests/__init__.py         (new)
+tests/test_stale_update.py (new) 4-case validation test
+tests/_smoke_server.py    (new) 9-case server-side dev smoke test
+```
+
+**Thiết kế quan trọng:**
+
+- **State machine**: `TRAINING → AGGREGATING → EVALUATING → DONE` (M3 = 1 round)
+- **`current_round = 1` từ start** (không phải 0)
+- **4-layer SubmitUpdate validation** đúng thứ tự: `unknown_client` → `state != TRAINING` → `stale_round` → `duplicate_update`
+- **Aggregation sync trong handler client cuối** → client cuối thấy upload time bao gồm server FedAvg+eval (~1s). M6 sẽ refactor sang background thread khi thêm timeout.
+- **Thread safety**: `threading.Lock` cho state, `_log_lock` riêng cho `events.csv` writes (tránh race khi `GetGlobalModel` log ngoài main lock)
+- **Server eval trên CPU** không tranh GPU với Client 1
+- **Hardcoded 2 client** (`client-0`, `client-1`) cho per-client log columns; refactor note đã ghi cho M4+
+
+**Logging structured (m3_plan §6, §7):**
+
+- `round_log.csv`: 22 cột bao gồm `accuracy`, `test_loss`, `acc_class_0..9`, `aggregation_time_ms`, `eval_time_ms`, `round_wallclock_sec`, per-client train_loss + num_samples
+- `events.csv`: schema `timestamp,round_id,event,client_id,message,num_samples` — event types: `client_registered`, `model_pulled`, `update_received`, `update_rejected`, `aggregation_start/done`, `evaluation_done`, `round_done`
+- `run_meta.json`: server + per-client metadata (hostname, GPU, torch_version, cuda_version) — client metadata gửi qua `ClientUpdate.hostname/gpu_name/torch_version/cuda_version` field
+
+### Kết quả verified
+
+**M3.7 — Localhost smoke (Máy 1, server + 2 client localhost):**
+
+| Metric | Value |
+|---|---|
+| Accuracy sau 1 round IID | **98.52%** |
+| Per-class accuracy | 96.3% – 99.9% (lớp 7 thấp nhất) |
+| Aggregation time | 3.5 ms |
+| Eval time (CPU) | 992 ms |
+| Round wallclock | 16.1 s |
+| Client train_loss | 0.0671 / 0.0663 |
+
+**M3.8 — Stale update validation test:** 4/4 case pass (stale_round, unknown_client, valid accept, duplicate_update).
+
+**M3.9 — Cross-machine (Máy 1 server + client-0; Máy 2 client-1):**
+
+Phải chạy 2 lần do phát hiện vấn đề môi trường ở Máy 2:
+
+| Run | Accuracy | Round wallclock | Ghi chú |
+|---|---|---|---|
+| v1 | 98.68% | **133 s** | Máy 2 chạy `torch+cpu` (CPU only) → client-1 train ~41s |
+| v2 | 98.45% | **19.4 s** | Sau khi Máy 2 reinstall `torch+cu126` → client-1 train ~8s (7x speedup) |
+
+Cross-machine v2 round_wallclock chỉ chậm ~3s so với localhost — overhead LAN nhỏ (RTT trung bình 4.9ms × ~4 RPC ≈ 20ms cộng với network bandwidth nhỏ cho 1.65MB state_dict).
+
+### Acceptance criteria (m3_plan §10)
+
+- [x] 1 round end-to-end không stuck cả localhost lẫn cross-machine
+- [x] Server reject đủ 4 case (stale_round, unknown_client, duplicate, state_not_training) đúng lý do trong `events.csv`
+- [x] Accuracy > 80% (đạt ~98.5% — vượt xa kỳ vọng)
+- [x] Loss giảm rõ (init random ~2.3 → sau 1 round ~0.047)
+- [x] `round_log.csv` đủ cột, `events.csv` đủ event type
+- [x] Timing breakdown client (download/train/upload) được log
+- [x] Client thoát sạch khi state=DONE (không poll vô tận)
+- [x] Cross-machine: cả 2 client trên 2 máy đều submit thành công
+
+### Vấn đề gặp phải & finding
+
+**1. Race condition `events.csv` writes (R1, code review tự phát hiện)**
+
+`log_event()` được gọi cả trong và ngoài `self.lock` (GetGlobalModel log ngoài lock). 2 thread concurrent có thể interleave CSV row trên Windows file I/O. Fix bằng `_log_lock` độc lập với main state lock. Verified 9/9 smoke case vẫn pass sau fix.
+
+**2. Vietnamese chars crash Windows cp1252 console (B1, review Máy 2's PR)**
+
+`client.py` và `test_stale_update.py` có tiếng Việt + Unicode (`✓`, `→`, `──`) trong `print()`. Windows console mặc định cp1252 → `UnicodeEncodeError`. Máy 2 fix bằng:
+
+```python
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+```
+
+**3. Máy 2 chạy PyTorch CPU-only (phát hiện qua `run_meta.json`)**
+
+M3.9 v1 chạy `torch 2.12.0+cpu` trên Máy 2 → `cuda_available: false` → fallback CPU silent (chỉ log WARN). Client-1 train chậm 7x (41s vs 8s). Phát hiện qua `run_meta.json.nodes[*].cuda_available` field — bằng chứng cho thấy việc track metadata per-node hữu ích thực tế.
+
+Fix: reinstall `pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121`. Sau fix: Máy 2 dùng `torch 2.12.0+cu126`. Minor version drift (Máy 1 dùng `2.5.1+cu121`) nhưng không ảnh hưởng (state_dict serialization platform-agnostic).
+
+**4. `experiment_name` precedence (M3.1 fix nhỏ)**
+
+`cfg.setdefault("experiment_name", default)` là no-op khi config.yaml đã có giá trị → server.py vô tình dùng `exp_centralized` thay vì `exp_federated_iid_smoke`. Fix bằng explicit check `if not args.experiment_name`. Precedence hiện tại: CLI > script default > config (config field hiện dead). Đáng dọn ở milestone sau.
+
+### Snapshot timing breakdown M3.9 v2
+
+```text
+Server:
+  aggregation:   3.7 ms     (FedAvg weighted average)
+  evaluation:  987.0 ms     (10000 test samples trên CPU)
+  total:       ~1.0 s
+
+Client-0 (Máy 1, submit thứ 2):
+  download:      7 ms       (1.65MB pull qua loopback)
+  train:      6288 ms       (2 epochs × ~30K samples GPU)
+  upload:     1040 ms       (incl. server agg+eval wait — vì là client cuối)
+  total:      7335 ms
+
+Client-1 (Máy 2, submit thứ 1):
+  download:    ~8 ms        (LAN pull)
+  train:      ~8000 ms      (2 epochs trên GPU)
+  upload:      ~10 ms       (network only — không phải client cuối)
+
+Round wallclock: 19.4 s (giới hạn bởi client chậm hơn + server eval)
+```
+
+### Git state cuối M3
+
+```
+3eef9ec (HEAD -> dev, origin/dev)  Merge feature/m3-stale-test into dev
+c05a049                            Merge feature/m3-server into dev
+a99cab0                            Merge feature/m3-client-loop into dev
+ad71747                            docs(m3): collaboration workflow
+0d3210d                            docs: Report/m3_plan.md
+ef949d2                            docs: milestone report M1 + M2
+b2bd2fe                            M2 verified
+ada1e41                            M2: gRPC hello world
+49734cb                            M1: centralized baseline
+c2d85bd (origin/main, main)        Initial commit
+```
+
+3 feature branches đã merge → đã xóa cả remote + local.
+
+---
+
+## Bước tiếp theo (M4)
+
+Mở rộng M3 sang **multi-round (5+ round IID)**:
+
+1. Server's `_aggregate_and_evaluate_locked` đã có sẵn nhánh "advance to next round" — chỉ cần verify hoạt động qua nhiều round liên tiếp
+2. Client cần loop lại từ "wait for TRAINING" sau khi submit (hiện exit sau 1 round) — sẽ là thay đổi chính trong M4
+3. Round log CSV append nhiều row (mỗi round 1 row)
+4. Acceptance: 5 round IID không stuck, accuracy tăng dần (1 round ~98.5%, 5 round kỳ vọng ~99%+)
+
+Sau M4 sẽ dễ dàng làm M5 (Non-IID) — chỉ đổi `data_split: noniid` trong config + dùng `partition_noniid_pathological` sẵn có ở `data_partition.py`.

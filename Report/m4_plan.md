@@ -56,7 +56,7 @@ M4 smoke: `python server.py --num-rounds 5`. Sau khi pass: chạy `--num-rounds 
 
 | # | Subtask | File | Owner | Branch | Estimate |
 |---|---|---|---|---|---|
-| M4.1 | Verify server multi-round (đọc code + smoke 2-3 round local) | server.py (no change) | **Máy 1** | — (verify only) | 15 min |
+| M4.1 | Sanity-check server M3 vẫn pass với `tests/_smoke_server.py` (server `--num-rounds 1`). Multi-round verify thật ngầm qua M4.3/M4.4 với client thật. | server.py (no change) | **Máy 1** | — (verify only) | 15 min |
 | M4.2 | Client refactor: outer round loop với `last_completed_round`; tách `do_one_round()` thành function | client.py | **Máy 2** | `feature/m4-client-multiround` | 45 min |
 | M4.3 | Smoke test localhost 5 round | (run) | **Máy 1** | — (sau khi merge M4.2) | 15 min |
 | M4.4 | Cross-machine 5 round | (run) | **Cả hai** | — | 15 min |
@@ -190,7 +190,7 @@ Output → `results/exp_federated_iid/baseline/` sẽ là dataset đầu vào ch
 - [ ] **Không có collapse** bất thường (accuracy tụt mạnh nhiều round liên tiếp)
 - [ ] **Accuracy round 5 ≥ 95%** (acceptance cứng duy nhất về metric)
 - [ ] Client thoát sạch sau round cuối, không poll vô tận
-- [ ] Client exit code = 3 nếu update bị reject (test bằng cách stop server giữa chừng → client gặp lỗi → exit clean)
+- [ ] Client exit code = **3 khi server trả `ack.accepted=False`** (reject có ý nghĩa: stale/duplicate/state). Test bằng cách trigger reject có kiểm soát (vd: chạy lại client cùng `client_id` sau khi đã submit → duplicate). Lưu ý: `grpc.RpcError` (server crash / network blip) là exit code 2, **không tính vào tiêu chí này**.
 - [ ] Cross-machine timing: round wallclock relatively stable (~20-25s mỗi round, không có round nào blow up bất thường)
 
 ## 9. Rủi ro & lưu ý
@@ -212,7 +212,7 @@ Output → `results/exp_federated_iid/baseline/` sẽ là dataset đầu vào ch
 Update `Report/milestone_report.md` với M4 section:
 - Tổng quan: M4 → ✅ Done
 - Section M4 với cùng cấu trúc (mục tiêu / công việc / verified / acceptance / vấn đề)
-- Snapshot 5 round accuracy curve (tăng dần qua các round)
+- Snapshot 5 round accuracy/loss curve (xu hướng qua các round — không bắt buộc monotonic)
 - Cross-machine timing trung bình per-round
 - (Nếu có) baseline 30 round data → noted cho Exp 1
 

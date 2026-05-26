@@ -72,20 +72,44 @@ python client.py --client-id client-1 --shard-id 1 --num-shards 2 --data-split n
 
 | # | Subtask | File | Owner | Branch | Estimate |
 |---|---|---|---|---|---|
-| M5.1 | Verify server không cần đổi (đọc code, confirm data-agnostic) | server.py (no change) | **Máy 1** | — | 5 min |
-| M5.2 | Client `--data-split` flag + dispatch + validation | client.py | **Máy 2** | `feature/m5-client-noniid` | 20 min |
+| **M5.0** | **Fix `create_run_dir()` snapshot resolved config** (tech debt từ M3 — hiện `shutil.copyfile` copy file gốc, không phản ánh CLI overrides). Sửa thành `yaml.safe_dump(cfg, ...)` để snapshot khớp với run thật. | `run_context.py` | **Máy 1** | `feature/m5-resolved-config-snapshot` | 15 min |
+| M5.1 | Verify server không cần đổi business logic (đọc code, confirm data-agnostic) | server.py (no change) | **Máy 1** | — | 5 min |
+| M5.2 | (a) Thêm `--data-split` vào `build_cli_parser()` chung. (b) Client dispatch + validation + **class distribution print**. | `run_context.py`, `client.py` | **Máy 2** | `feature/m5-client-noniid` | 25 min |
 | M5.3 | Localhost smoke 5 round Non-IID | (run) | **Máy 1** | — (sau merge) | 10 min |
 | M5.4 | Cross-machine 5 round Non-IID | (run) | **Cả 2** | — | 10 min |
 | M5.5 | Compare IID vs Non-IID (CSV side-by-side, per-class table) | analysis | **Máy 1** | — | 20 min |
 | M5.6 | Update `Report/milestone_report.md` với M5 section + comparison table | report | **Máy 1** | direct commit dev | 20 min |
 
-**Tổng:** ~1.5 giờ. Scope hẹp nhất từ trước đến giờ.
+**Tổng:** ~1.75 giờ.
+
+**Thứ tự merge bắt buộc:**
+
+1. **M5.0 trước M5.2** — vì cả 2 đều sửa `run_context.py`. Nếu Máy 2 push M5.2 trước, sẽ có conflict + Máy 2 không có snapshot fix để verify.
+2. Máy 1 push `feature/m5-resolved-config-snapshot` → merge dev → báo Máy 2 pull → Máy 2 bắt đầu `feature/m5-client-noniid`.
 
 ## 6. Client implementation (M5.2) — pseudocode
 
-### 6.1 `run_context.py` — thêm `--data-split` vào shared parser
+### 6.1 `run_context.py` — 2 thay đổi
 
-Để **server + client + centralized đều nhận** flag (server cần để snapshot config, client cần để dispatch):
+**(a) M5.0 (Máy 1, prereq):** Fix `create_run_dir()` snapshot **resolved config** thay vì copy file gốc.
+
+```python
+# HIỆN TẠI (M3 tech debt):
+snapshot = run_dir / "config.yaml"
+if Path(config_path).resolve() != snapshot.resolve():
+    shutil.copyfile(config_path, snapshot)   # ← copy file GỐC, mất CLI overrides
+
+# SỬA THÀNH:
+snapshot = run_dir / "config.yaml"
+with snapshot.open("w", encoding="utf-8") as f:
+    yaml.safe_dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+```
+
+Verify sau M5.0 merge: chạy bất kỳ script với CLI override (vd `python server.py --num-rounds 99 --run-id test_snapshot`) → `cat results/.../test_snapshot/config.yaml` phải thấy `num_rounds: 99`, không phải `30` (config gốc).
+
+`shutil` import có thể remove (không còn dùng).
+
+**(b) M5.2 (Máy 2):** Thêm `--data-split` vào shared parser để **server + client + centralized đều nhận**:
 
 ```python
 # Trong build_cli_parser() ở run_context.py
@@ -106,6 +130,8 @@ def cli_overrides(args):
 ```
 
 → Vì flag đã ở parser chung, `args.data_split` luôn tồn tại (defaults None) → an toàn cho mọi script.
+
+**Lưu ý:** M5.2 cần làm SAU khi M5.0 merge (cả 2 đều sửa `run_context.py`, tránh conflict). Máy 2 pull dev mới nhất trước khi bắt đầu branch.
 
 ### 6.2 `client.py` — dispatch + validation
 
@@ -147,6 +173,12 @@ if not (0 <= args.shard_id < len(shards)):
     sys.exit(4)
 
 shard = shards[args.shard_id]
+
+# In class distribution THỰC TẾ (không phải hardcoded label) — hữu ích debug
+from collections import Counter
+labels = [int(train_set.targets[i]) for i in shard.indices]
+dist = dict(sorted(Counter(labels).items()))
+print(f"[client {client_id}] shard size={len(shard)} class_distribution={dist}")
 ```
 
 → `--data-split` flag được pickup từ shared `build_cli_parser` (không thêm riêng ở client).
@@ -166,8 +198,8 @@ shard = shards[args.shard_id]
 ### 7.1 Localhost smoke 5 round Non-IID (M5.3)
 
 ```powershell
-# Terminal 1: server (note experiment name khác)
-python server.py --num-rounds 5 --experiment-name exp_federated_noniid_smoke --run-id m5_local
+# Terminal 1: server — phải có --data-split noniid để snapshot config đúng
+python server.py --num-rounds 5 --data-split noniid --experiment-name exp_federated_noniid_smoke --run-id m5_local
 
 # Terminal 2: client 0 (digits 0-4)
 python client.py --client-id client-0 --shard-id 0 --num-shards 2 --data-split noniid
@@ -176,7 +208,17 @@ python client.py --client-id client-0 --shard-id 0 --num-shards 2 --data-split n
 python client.py --client-id client-1 --shard-id 1 --num-shards 2 --data-split noniid
 ```
 
-Output: `results/exp_federated_noniid_smoke/m5_local/{round_log.csv, events.csv, run_meta.json}`
+Output: `results/exp_federated_noniid_smoke/m5_local/{round_log.csv, events.csv, run_meta.json, config.yaml}`
+
+Verify ngay sau khi run xong:
+```powershell
+# Snapshot phải khớp với CLI
+type results\exp_federated_noniid_smoke\m5_local\config.yaml
+# Phải thấy: data_split: noniid (không phải iid)
+
+# Class distribution phải khớp với pathological split
+# Trong console output mỗi client: client-0 thấy {0..4}, client-1 thấy {5..9}
+```
 
 Kỳ vọng (xem §9 risk):
 - 5 round chạy không stuck
@@ -204,7 +246,7 @@ python client.py --client-id client-0 --shard-id 0 --num-shards 2 --data-split f
 
 - [ ] 5 round Non-IID chạy end-to-end không stuck (localhost + cross-machine)
 - [ ] `round_log.csv` đủ 5 row, output đúng folder `exp_federated_noniid_smoke/`
-- [ ] **Client-0 nhận data chỉ digits 0-4, Client-1 chỉ 5-9** (verified qua log size hoặc print)
+- [ ] **Client-0 nhận data chỉ digits 0-4, Client-1 chỉ 5-9** — verified qua `class_distribution=...` print của client (in giá trị Counter thực tế, không phải hardcoded label). Client-0 phải in `{0: ~5923, 1: ~6742, 2: ~5958, 3: ~6131, 4: ~5842}` (số xấp xỉ MNIST), client-1 in các keys 5-9.
 - [ ] **Accuracy round 5 ≥ 70%** (acceptance NỚI hơn IID — Non-IID khó hội tụ). Nếu <70% nhưng ≥50%, xem §9 risk 1 trước khi kết luận bug.
 - [ ] **Per-class accuracy được log và so sánh** với IID baseline. Ghi nhận chênh lệch nếu có; KHÔNG fail M5 nếu pattern lệch không khớp expectation cụ thể (4, 5 thấp) — depend on seed/hyperparameter.
 - [ ] Loss giảm qua các round (cải thiện có giảm, không nhất thiết bằng IID rate, có thể dao động)

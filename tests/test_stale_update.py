@@ -25,6 +25,10 @@ import argparse
 import sys
 from pathlib import Path
 
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
 # Thêm repo root vào sys.path để import model, proto, v.v.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 

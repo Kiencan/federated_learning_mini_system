@@ -13,8 +13,11 @@ seed: 42                  # set cho random, numpy, torch
 device: "cuda"            # cuda | cpu — server có thể override "cpu" để không tranh GPU
 
 # Distributed (federated only)
-wait_timeout: 15          # giây — chờ tối đa client gửi update mỗi round
-min_clients: 1            # tối thiểu để aggregate
+wait_timeout: 15          # giây — chờ tối đa client gửi update mỗi round (M6+)
+min_clients: 2            # tối thiểu để aggregate. M3-M5: 2. M6+ về 1 cho fault tolerance.
+expected_client_ids:      # whitelist cho M3-M5. M6 mở rộng cho dynamic registration.
+  - "client-0"
+  - "client-1"
 server_addr: "127.0.0.1:50051"  # đổi sang LAN IP khi deploy 2 máy
 
 # Experiment

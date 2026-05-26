@@ -13,7 +13,7 @@ Tài liệu này theo dõi kết quả thực hiện từng milestone của dự
 | M1 | Centralized baseline (1 máy, không gRPC) | ✅ Done | `49734cb` |
 | M2 | gRPC hello world qua 2 máy | ✅ Done | `ada1e41` → `b2bd2fe` |
 | M3 | Server/client chạy 1 round IID | ✅ Done | `a99cab0` → `c05a049` → `3eef9ec` |
-| M4 | Chạy 5 round IID + log CSV | ⏳ Pending | — |
+| M4 | Chạy 5 round IID + log CSV | ✅ Done | `38c66fe` |
 | M5 | Thêm Non-IID partition | ⏳ Pending | — |
 | M6 | Timeout + stale update rejection | ⏳ Pending | — |
 | M7 | Straggler + failure experiments | ⏳ Pending | — |
@@ -388,13 +388,143 @@ c2d85bd (origin/main, main)        Initial commit
 
 ---
 
-## Bước tiếp theo (M4)
+## Milestone 4 — Multi-round IID (5 round)
 
-Mở rộng M3 sang **multi-round (5+ round IID)**:
+### Mục tiêu
 
-1. Server's `_aggregate_and_evaluate_locked` đã có sẵn nhánh "advance to next round" — chỉ cần verify hoạt động qua nhiều round liên tiếp
-2. Client cần loop lại từ "wait for TRAINING" sau khi submit (hiện exit sau 1 round) — sẽ là thay đổi chính trong M4
-3. Round log CSV append nhiều row (mỗi round 1 row)
-4. Acceptance: 5 round IID không stuck, accuracy tăng dần (1 round ~98.5%, 5 round kỳ vọng ~99%+)
+Mở rộng M3 từ 1 round → N round liên tiếp. Verify server `_aggregate_and_evaluate_locked` nhánh advance round + client loop tự detect round mới. Đặt nền cho phase Experiments (30 round IID baseline) và M5 (Non-IID).
 
-Sau M4 sẽ dễ dàng làm M5 (Non-IID) — chỉ đổi `data_split: noniid` trong config + dùng `partition_noniid_pathological` sẵn có ở `data_partition.py`.
+> Plan chi tiết: [m4_plan.md](m4_plan.md)
+
+### Công việc đã làm
+
+**Workflow:** 1 feature branch duy nhất `feature/m4-client-multiround` (Máy 2 owned, M4.2). Server không cần code change — nhánh advance round đã có sẵn từ M3.
+
+| Subtask | Owner | Status |
+|---|---|---|
+| M4.1 Server sanity-check (`_smoke_server.py` 9 case, server `--num-rounds 1`) | Máy 1 | ✓ 9/9 pass |
+| M4.2 Client multi-round refactor | Máy 2 | ✓ merged `38c66fe` |
+| M4.3 Localhost smoke 5 round | Máy 1 | ✓ 99.27% |
+| M4.4 Cross-machine 5 round | Cả 2 | ✓ 99.24% |
+| M4.6 Update milestone_report.md (this section) | Máy 1 | ✓ |
+
+**Thay đổi chính ở `client.py`** (388 dòng modified, +232/-156):
+
+- **3 helper functions** tách rõ:
+  - `train_local(round_id)` — train per-epoch (giữ từ M3, thêm round_id cho log)
+  - `wait_for_new_round_or_done(stub, last_completed_round)` — poll detect server advance: return khi state=DONE hoặc state=TRAINING với round > last_completed
+  - `do_one_round()` — encapsulate per-round flow: GetGlobalModel → load fresh weights → SGD mới → train → SubmitUpdate
+- **Setup 1 lần** ngoài outer loop: channel, stub, MNIST shard, DataLoader, device, metadata (`gpu_name`, `cuda_ver`)
+- **Per-round** trong outer loop: `MnistCNN()` mới + load global state_dict + optimizer SGD mới
+- **DataLoader reuse**: shuffle=True tự rotate qua các round, không re-load MNIST mỗi round
+- **Reject handling** rõ ràng: `ack.accepted=False` → in `ack.message` + `server_round` → `sys.exit(3)`. RPC error → `sys.exit(2)`. Channel timeout → `sys.exit(1)`
+- **Summary statistics** cuối run: total + avg per round (download/train/upload)
+- **M2 compat** `--poll N` mode preserved + **B1 Windows UTF-8** fix preserved
+
+### Kết quả verified
+
+**M4.3 — Localhost smoke 5 round (Máy 1, server + 2 client):**
+
+| Round | Accuracy | Test loss | Client-0 train_loss | Client-1 train_loss | Round wallclock |
+|---|---|---|---|---|---|
+| 1 | **0.9852** | 0.0471 | 0.0671 | 0.0663 | 25.3 s (cold start) |
+| 2 | 0.9902 | 0.0288 | 0.0440 | 0.0382 | 9.5 s |
+| 3 | 0.9917 | 0.0257 | 0.0304 | 0.0271 | 8.5 s |
+| 4 | 0.9933 | 0.0212 | 0.0230 | 0.0221 | 9.1 s |
+| 5 | **0.9927** | 0.0215 | 0.0184 | 0.0168 | 8.6 s |
+
+**M4.4 — Cross-machine 5 round (Máy 1 server + client-0; Máy 2 client-1 với GPU sau fix):**
+
+| Round | Accuracy | Test loss | Round wallclock |
+|---|---|---|---|
+| 1 | **0.9844** | 0.0500 | 88.1 s (cold start, includes Máy 2 MNIST load + LAN warmup) |
+| 2 | 0.9914 | 0.0278 | 12.6 s |
+| 3 | 0.9913 | 0.0248 | 12.7 s |
+| 4 | 0.9929 | 0.0218 | 12.8 s |
+| 5 | **0.9924** | 0.0208 | 12.8 s |
+
+**Quan sát:**
+
+- **Hội tụ nhanh:** Round 1 đã đạt ~98.5%, round 5 vượt 99.2% trên cả 2 setup
+- **Không monotonic 100%:** Round 3 (cross-machine) tụt 0.01% so với round 2, round 5 tụt 0.05% so với round 4 — bình thường với FedAvg + SGD + shuffle dao động. **Không có collapse** (không có round nào tụt mạnh).
+- **Cross-machine overhead:** ~3-4s per round vs localhost (12.7s vs 9s). Phần lớn là LAN download + upload thêm cho client-1.
+- **Aggregation rất nhanh:** 1.5-3.7ms — không phải bottleneck.
+- **Eval ~1s consistent** trên CPU (10000 test samples).
+- **Per-class accuracy round 5** (M4.4): tất cả 10 lớp ≥ 98.7% (lớp 8 cao nhất 99.5%, lớp 9 thấp nhất 98.7%).
+
+### Acceptance criteria (m4_plan §8)
+
+- [x] 5 round liên tiếp end-to-end không stuck cả localhost lẫn cross-machine
+- [x] `round_log.csv` đúng 5 row, mỗi row đầy đủ cột
+- [x] `events.csv` đủ events 5 chu kỳ (42 dòng localhost: 5 × 8 events + 2 client_registered)
+- [x] Loss/accuracy **xu hướng cải thiện** qua 5 round (cả 2 client train_loss giảm monotonic)
+- [x] **Không có collapse** (không có round nào tụt mạnh)
+- [x] **Accuracy round 5 ≥ 95%** (đạt **99.24% cross-machine** — vượt xa)
+- [x] Client thoát sạch sau round cuối, in summary đầy đủ
+- [x] Exit code 3 nếu reject (verified qua design code, không trigger thực tế trong test)
+- [x] Cross-machine timing stable (12.6-12.8s rounds 2-5, không có round nào blow up bất thường)
+
+### Vấn đề gặp phải
+
+**1. Round 1 cold start dài đặc biệt cross-machine (88s vs 25s localhost vs 12s steady-state)**
+
+Nguyên nhân: round 1 bao gồm cả MNIST download/cache check trên Máy 2 (nếu chưa có), gRPC channel handshake, JIT compilation CUDA kernels lần đầu, và DataLoader worker init. Đây là **one-time overhead**, không xuất hiện ở các round sau. Acceptable — không cần fix.
+
+**2. Accuracy không monotonic 100% (round 3 và 5 tụt nhẹ)**
+
+Round 3 cross-machine: 99.13% (tụt 0.01% so với 99.14% round 2). Round 5: 99.24% (tụt 0.05% so với 99.29% round 4). Nguyên nhân: random noise từ SGD + DataLoader shuffle + FedAvg averaging. Không phải bug — confirm bằng acceptance đã sửa từ "monotonic" sang "không collapse".
+
+**3. Per-client log columns hard-code (R5 notes từ M3 vẫn applies)**
+
+`round_log.csv` có `client_0_*` và `client_1_*` hard-code cho 2 client. M4 không sửa — vẫn note refactor cho M4+ khi num_clients > 2 (hiện chưa có scope).
+
+### Code review issues defer cho M5+ (không block M4)
+
+| # | Vấn đề | Impact |
+|---|---|---|
+| I1 | `gpu_name` populate kể cả khi `device` fallback CPU — metadata `run_meta.json` có thể misleading | Minor (cosmetic metadata) |
+| I6 | `rounds_done = last_completed_round` sai với mid-experiment join | Edge case M4 không hỗ trợ |
+| I10 | Print prefix mix `[client]` vs `[client {id}]` | Cosmetic |
+
+### Snapshot timing breakdown — M4.4 (steady state rounds 2-5 avg)
+
+```text
+Server:
+  aggregation:    ~2.1 ms  (FedAvg weighted average, very fast)
+  evaluation:   ~980 ms   (CPU, 10000 test samples)
+  round overhead: ~3 ms
+
+Client (per round, GPU):
+  download:    ~7-10 ms     (LAN pull 1.65MB)
+  train:       ~7000-8500 ms (2 epochs × ~30K samples × 32 batch)
+  upload:      ~10-1000 ms   (depend on which client submits last → blocked by server eval)
+```
+
+**Bottleneck:** train (~7-8s) chiếm 60% wallclock per round. Eval (~1s) chiếm 10%. Phần còn lại là client polling interval (2s) + network.
+
+### Git state cuối M4
+
+```
+38c66fe (HEAD -> dev, origin/dev)  Merge feature/m4-client-multiround into dev
+82a301f                            docs(m4): 3 chỉnh sửa nhỏ
+57c73ad                            docs(m4): refine plan
+ddb16d9                            docs(m4): thêm Report/m4_plan.md
+cf136f5                            docs(m3): add Milestone 3 section
+3eef9ec                            Merge feature/m3-stale-test into dev
+...
+```
+
+`feature/m4-client-multiround` đã xóa khỏi remote + local sau merge.
+
+---
+
+## Bước tiếp theo (M5)
+
+Thêm **Non-IID partition** (Client 1: digits 0-4, Client 2: digits 5-9 — pathological split):
+
+1. Client thêm CLI flag `--data-split iid|noniid`
+2. Khi `noniid`, dùng `partition_noniid_pathological(train_set)` (đã có sẵn ở `data_partition.py`)
+3. Verify FedAvg vẫn aggregate đúng (server không quan tâm partition)
+4. Acceptance: 5+ round Non-IID không stuck; accuracy có thể **thấp hơn IID** (~80-90%), per-class accuracy sẽ lệch (mỗi client chỉ thấy 5 lớp local)
+
+Đây là phép thử distributed systems quan trọng nhất của dự án — chuẩn bị data cho Experiment 2 (IID vs Non-IID). M5 scope hẹp như M4 (chủ yếu là test + log analysis, code change tối thiểu).

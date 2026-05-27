@@ -64,9 +64,9 @@ expected_client_ids:      # vẫn 2 client
 
 | # | Subtask | File | Owner | Branch | Estimate |
 |---|---|---|---|---|---|
-| M6.1 | CLI flags `--min-clients`, `--wait-timeout` vào `build_cli_parser` + `cli_overrides` | `run_context.py` | **Máy 1** | `feature/m6-server-async-agg` (cùng branch với M6.2) | 10 min |
-| M6.2 | Server refactor: `_run_aggregation_loop()` background thread + timeout logic 3 paths + new events | `server.py` | **Máy 1** | `feature/m6-server-async-agg` | 90 min |
-| M6.3 | Update `tests/_smoke_server.py` — explicit pass `--min-clients 2` qua server invocation (docs update) hoặc skip case 4 nếu min_clients=1 | `tests/_smoke_server.py` | **Máy 1** | (cùng branch) | 15 min |
+| M6.1 | CLI flags `--min-clients` (int), `--wait-timeout` (float) vào `build_cli_parser` + map cả 2 trong `cli_overrides` | `run_context.py` | **Máy 1** | `feature/m6-server-async-agg` (cùng branch với M6.2) | 10 min |
+| M6.2 | Server refactor: background thread + 3-phase lock design (snapshot → heavy work no-lock → commit) + 3 paths + new events + `round_status` cột mới | `server.py` | **Máy 1** | `feature/m6-server-async-agg` | 90 min |
+| M6.3 | Update docstring `tests/_smoke_server.py` ghi rõ prereq: "server phải start với `--min-clients 2` để case 4 (duplicate) không bị aggregate sớm". KHÔNG sửa logic script — script không tự start server | `tests/_smoke_server.py` (docstring only) | **Máy 1** | (cùng branch) | 5 min |
 | M6.4 | Test Scenario A (both fast, no timeout), B (1 client only, hit timeout), C (0 clients, skip round) localhost | (run) | **Máy 1** | — | 25 min |
 | M6.5 | Cross-machine test Scenario A + B | (run) | **Cả 2** | — | 15 min |
 | M6.6 | Update `Report/milestone_report.md` với M6 section + 3 scenarios | report | **Máy 1** | direct commit dev | 25 min |
@@ -74,6 +74,8 @@ expected_client_ids:      # vẫn 2 client
 **Tổng:** ~3 giờ. M6 phức tạp hơn M4/M5 vì server-side refactor lớn.
 
 ## 6. Implementation (M6.2) — pseudocode
+
+> **NGUYÊN TẮC LOCK QUAN TRỌNG:** KHÔNG giữ `state.lock` trong khi chạy FedAvg/evaluate/CSV write (~1-2s). Lock chỉ dùng cho **state transition + snapshot data**. Aggregation/eval chạy trên **local variables** (snapshot copy), sau đó reacquire lock để commit kết quả vào `s.model` và advance round. Tránh block mọi RPC + Ctrl+C trong vài giây.
 
 ### 6.1 `ServerState` thêm aggregation thread
 
@@ -84,85 +86,124 @@ class ServerState:
         self.lock = threading.Lock()
         self.condition = threading.Condition(self.lock)  # NEW
         self.shutdown = False                             # NEW
-        self.wait_timeout = cfg["wait_timeout"]           # NEW (read from config)
-        self.expected_count = len(self.expected_client_ids)  # = 2 typically
-        # min_clients đã có từ M3, vẫn dùng
+        self.wait_timeout = float(cfg["wait_timeout"])    # NEW
+        self.expected_count = len(self.expected_client_ids)  # typically 2
+        # min_clients đã có từ M3, vẫn dùng (int)
+
+        # M6: validate config invariants — fail-fast nếu sai
+        if not (1 <= self.min_clients <= self.expected_count):
+            raise ValueError(
+                f"min_clients={self.min_clients} phải trong [1, {self.expected_count}]"
+            )
+        if self.wait_timeout <= 0:
+            raise ValueError(f"wait_timeout={self.wait_timeout} phải > 0")
 ```
 
-### 6.2 Background aggregation thread (NEW)
+### 6.2 Background aggregation thread (NEW) — **lock-aware design**
 
 ```python
 def run_aggregation_loop(state: ServerState, servicer: FederatedServicer):
-    """Background thread: chờ aggregation trigger từng round."""
+    """Background thread: drive 1 round at a time. Release lock during heavy work."""
     while not state.shutdown:
+        # ── Phase 1: wait for trigger (lock held) ────────────────────────────
         with state.condition:
-            # Đảm bảo đang ở state TRAINING (round mới mở)
-            if state.state != federated_pb2.RoundStatus.TRAINING:
+            # Chờ vào state TRAINING (sau init hoặc sau advance round)
+            while not state.shutdown and state.state != federated_pb2.RoundStatus.TRAINING:
                 state.condition.wait(timeout=1)
-                continue
-            
+            if state.shutdown:
+                return
+
             deadline = state.round_start_time + state.wait_timeout
-            
-            # Wait until: all expected OR timeout
+            round_id = state.current_round
+
+            # Chờ: đủ expected HOẶC hết timeout
             while not state.shutdown:
                 now = time.time()
                 remaining = deadline - now
-                
-                # All expected clients done → aggregate ngay
                 if len(state.received_updates) >= state.expected_count:
-                    break
-                
-                # Timeout reached
+                    break  # path A: early aggregation
                 if remaining <= 0:
-                    state.log_event("round_timeout",
-                        message=f"received={len(state.received_updates)}/{state.expected_count}")
-                    break
-                
+                    state.log_event(
+                        "round_timeout",
+                        message=f"received={len(state.received_updates)}/{state.expected_count}",
+                    )
+                    break  # path B hoặc C
                 state.condition.wait(timeout=remaining)
-            
+
             if state.shutdown:
                 return
-            
-            # Decide: aggregate, partial, or skip
+
+            # ── Snapshot & decide path (vẫn trong lock) ────────────────────
             received_count = len(state.received_updates)
-            
             if received_count >= state.min_clients:
-                if received_count < state.expected_count:
-                    state.log_event("partial_aggregation",
-                        message=f"received={received_count}/{state.expected_count}")
-                # State transition + actual aggregation
+                # Path A hoặc B: chuẩn bị aggregate
                 state.state = federated_pb2.RoundStatus.AGGREGATING
-                servicer._aggregate_and_evaluate_locked()
+                updates_snapshot = list(state.received_updates.items())  # immutable snapshot
+                is_partial = received_count < state.expected_count
             else:
-                # 0 clients → skip round
-                state.log_event("round_skipped",
-                    message=f"received=0, advancing to next round")
+                # Path C: skip
+                state.log_event(
+                    "round_skipped",
+                    message=f"received=0/{state.expected_count}",
+                )
+                # Ghi round_log row "skipped" trước khi advance (xem §6.7)
+                servicer._write_skipped_round_row(round_id, received_count)
                 _advance_to_next_round_locked(state)
+                state.condition.notify_all()
+                continue
+
+        # ── Phase 2: heavy work OUTSIDE lock ─────────────────────────────────
+        if is_partial:
+            state.log_event(
+                "partial_aggregation",
+                message=f"received={received_count}/{state.expected_count}",
+            )
+
+        # FedAvg + evaluate trên LOCAL variables — không chạm s.model
+        new_state_dict, agg_ms = _do_fedavg(updates_snapshot)
+        test_loss, accuracy, per_class, eval_ms = _do_evaluate(
+            new_state_dict, state.test_loader, state.eval_device
+        )
+        # CSV write — events.csv có _log_lock riêng, round_log.csv chỉ thread này ghi
+        servicer._write_round_log_row(
+            round_id, updates_snapshot, accuracy, test_loss,
+            per_class, agg_ms, eval_ms, status="ok" if not is_partial else "partial",
+        )
+
+        # ── Phase 3: commit + advance (lock held, nhanh) ─────────────────────
+        with state.condition:
+            state.model.load_state_dict(new_state_dict)
+            state.log_event("aggregation_done", message=f"duration_ms={agg_ms:.1f}")
+            state.log_event("evaluation_done", message=f"accuracy={accuracy:.4f}")
+            _advance_to_next_round_locked(state)
+            state.condition.notify_all()
 ```
 
-### 6.3 `SubmitUpdate` handler — non-blocking notify
+**Lock duration analysis:**
+- Phase 1 lock: ~timeout seconds (mostly waiting via `condition.wait`, releases lock internally)
+- Phase 2 (no lock): FedAvg ~3ms + eval ~1000ms + CSV ~10ms ≈ **1s of zero lock contention**
+- Phase 3 lock: state mutation + log events ≈ **<10ms**
+
+Trong Phase 2, mọi RPC khác (SubmitUpdate, GetGlobalModel, GetRoundStatus) đều có thể chạy. SubmitUpdate sẽ thấy `state=AGGREGATING` → reject `state_not_training`. GetGlobalModel returns OLD model (chưa load_state_dict mới) — đúng cho round đã đóng.
+
+### 6.3 `SubmitUpdate` handler — chỉ snapshot + notify
 
 ```python
 def SubmitUpdate(self, request, context):
     with self.s.lock:
         # ... 4-layer validation as before ...
-        
-        # Store update
         self.s.received_updates[request.client_id] = request
         self.s.log_event("update_received", ...)
         self.s.write_client_metadata_if_new(request)
-        
-        # NEW: notify aggregation thread, KHÔNG aggregate inline
-        self.s.condition.notify_all()
-    
+        self.s.condition.notify_all()  # wake aggregation thread
     return federated_pb2.AckResponse(accepted=True, ...)
 ```
 
-### 6.4 `_advance_to_next_round_locked` (NEW helper)
+### 6.4 `_advance_to_next_round_locked` (NEW helper) — caller giữ lock
 
 ```python
 def _advance_to_next_round_locked(state):
-    """Chuyển sang round tiếp theo HOẶC set DONE. Caller giữ lock."""
+    """Chuyển sang round tiếp theo HOẶC set DONE."""
     if state.current_round >= state.num_rounds_total:
         state.state = federated_pb2.RoundStatus.DONE
         state.log_event("round_done", message="final state DONE")
@@ -174,26 +215,16 @@ def _advance_to_next_round_locked(state):
         state.log_event("round_done", message=f"advancing_to_round={state.current_round}")
 ```
 
-Logic này tách ra để dùng cả ở `_aggregate_and_evaluate_locked` (cuối) và `round_skipped` path.
-
 ### 6.5 Server `main()` start/stop thread
 
 ```python
 def main():
     # ... existing setup ...
-    
-    # NEW: start aggregation thread
-    agg_thread = threading.Thread(
-        target=run_aggregation_loop,
-        args=(state, servicer),
-        daemon=True,
-    )
+    agg_thread = threading.Thread(target=run_aggregation_loop, args=(state, servicer), daemon=True)
     agg_thread.start()
-    
     try:
         server.wait_for_termination()
     except KeyboardInterrupt:
-        # NEW: signal shutdown
         with state.condition:
             state.shutdown = True
             state.condition.notify_all()
@@ -201,25 +232,33 @@ def main():
         server.stop(grace=2).wait()
 ```
 
-### 6.6 Refactor `_aggregate_and_evaluate_locked` (existing)
+Vì heavy work (Phase 2) **không giữ lock**, set `shutdown=True` luôn được lock ngay → thread thoát trong Phase 1 hoặc Phase 3 sau ≤1 iter của `condition.wait(timeout=1)`. **Acceptance "thread join < 2s" được đảm bảo.**
 
-Sau khi aggregation+eval xong, KHÔNG set DONE inline nữa — gọi `_advance_to_next_round_locked` để xử lý nhất quán:
+### 6.6 Remove cũ `_aggregate_and_evaluate_locked` — tách thành 2 hàm pure
 
-```python
-def _aggregate_and_evaluate_locked(self):
-    s = self.s
-    # ... existing FedAvg + evaluate + write CSV ...
-    
-    # OLD:
-    # if round_id >= s.num_rounds_total:
-    #     s.state = DONE
-    # else:
-    #     s.current_round += 1
-    #     ...
-    
-    # NEW: gọi helper chung
-    _advance_to_next_round_locked(s)
+Hàm cũ trong server.py M5 vừa làm logic (read state) vừa làm work (FedAvg/eval/write). M6 tách:
+
+- `_do_fedavg(updates_snapshot) -> (new_state_dict, agg_ms)` — pure, không chạm state
+- `_do_evaluate(state_dict, loader, device) -> (loss, acc, per_class, eval_ms)` — pure
+- `_write_round_log_row(round_id, updates_snapshot, ...)` — chỉ aggregation thread gọi → không cần lock (single writer)
+- `_write_skipped_round_row(round_id, received_count)` — tương tự
+
+### 6.7 `round_log.csv` schema — thêm cột `round_status` (M6 mới)
+
+Thêm 1 cột ở vị trí phù hợp (sau `num_clients_received`):
+
+```text
+round_id, num_clients_received, round_status, accuracy, test_loss, ..., client_X_*
 ```
+
+Giá trị `round_status`:
+- `"ok"` — Path A (aggregate với đủ expected clients)
+- `"partial"` — Path B (timeout + ≥min_clients)
+- `"skipped"` — Path C (timeout + 0 clients)
+
+Row "skipped" có `num_clients_received=0`, `accuracy`/`test_loss`/per-class/timings để **trống string** (`""`), `client_0_*`/`client_1_*` cũng trống. Server eval gần nhất giữ `s.model` cũ; KHÔNG eval lại trong skip path (không có model mới để đánh giá).
+
+**Backward compat:** schema mới có thêm 1 cột so với M3-M5. Centralized run không bị ảnh hưởng vì dùng schema khác (epoch-based). Analysis scripts cho M3-M5 data sẽ vẫn parse được nếu dùng `csv.DictReader` (cột thiếu = None).
 
 ## 7. Test plan (M6.4 + M6.5)
 
@@ -239,21 +278,27 @@ python client.py --client-id client-1 --shard-id 1 --num-shards 2
 - KHÔNG có `round_timeout`/`partial_aggregation`/`round_skipped` events
 - Accuracy ~99% như M4
 
-### 7.2 Scenario B — 1 client only (hit timeout, partial aggregation)
+### 7.2 Scenario B — 1 client present (fast enough), hit timeout, partial aggregation
+
+**Điều kiện rõ:** Client-0 hoàn thành training + submit **TRƯỚC** `wait_timeout`. Client-1 KHÔNG được start. Đây KHÔNG phải "slow client" scenario (M7 sẽ test bằng `--straggler-delay`).
 
 ```powershell
-# Server với wait_timeout=10s cho test nhanh
+# Server: wait_timeout=10s đủ cho client-0 train (~7s) + buffer
 python server.py --num-rounds 3 --wait-timeout 10 --min-clients 1 --run-id m6_scenario_b
-# CHỈ client-0
+# CHỈ client-0 (train ~7s, submit trước deadline 10s)
 python client.py --client-id client-0 --shard-id 0 --num-shards 2
 # KHÔNG start client-1
 ```
 
 **Kỳ vọng:**
-- Mỗi round: client-0 submit trong ~7s → server vẫn chờ client-1 đến deadline (10s)
-- Sau 10s: log `round_timeout received=1/2` → log `partial_aggregation received=1/2` → aggregate với 1 weights → advance
-- 3 round chạy được, accuracy có thể không cao (chỉ 1 client = chỉ shard 0-4 dữ liệu nếu Non-IID, hoặc IID half data)
+- Mỗi round: client-0 submit @~7s → server đợi client-1 đến deadline (10s)
+- Sau 10s: log `round_timeout received=1/2` → log `partial_aggregation received=1/2` → aggregate với chỉ client-0 weights → advance
+- 3 round chạy được (~30s tổng, dominated bởi timeout)
 - events.csv có 3 `partial_aggregation` events
+- round_log.csv: 3 row với `round_status=partial`, `num_clients_received=1`
+- Accuracy có thể không cao (chỉ 1 nửa data MNIST IID — kỳ vọng ~95-97%)
+
+**Note về timing:** nếu `wait_timeout` < train_time của client (vd `--wait-timeout 5`), client-0 sẽ miss deadline → sau khi train xong, submit gặp `state_not_training` reject (server đã skip round) → exit 3. Đây là trường hợp riêng (test "slow client"), không phải Scenario B chính.
 
 ### 7.3 Scenario C — 0 clients (skip round)
 

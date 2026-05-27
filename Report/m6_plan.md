@@ -172,9 +172,11 @@ def run_aggregation_loop(state: ServerState, servicer: FederatedServicer):
 
         # ── Phase 3: commit + advance (lock held, nhanh) ─────────────────────
         with state.condition:
-            # Guard: kiểm tra state vẫn như khi Phase 1 snapshot (self-defensive)
+            # Guard 1: shutdown → return im lặng (KHÔNG log commit_aborted —
+            # shutdown là expected, không phải bug)
             if state.shutdown:
                 return
+            # Guard 2: state/round lệch → log commit_aborted (bug thật, cần debug)
             if state.current_round != round_id or state.state != federated_pb2.RoundStatus.AGGREGATING:
                 state.log_event(
                     "commit_aborted",
@@ -344,7 +346,7 @@ python tests\_smoke_server.py
 
 ## 8. Acceptance criteria
 
-- [ ] Server start có background aggregation thread, Ctrl+C shutdown sạch (thread join < 2s)
+- [ ] Server start có background aggregation thread; Ctrl+C shutdown sạch, **thread join expected <2s trong smoke test** (không guaranteed cứng nếu trùng vào Phase 2 eval — xem §9.9)
 - [ ] Scenario A: 3 round chạy không stuck, **không có** event timeout/skip/partial. round_log.csv 3 row với `round_status=ok`
 - [ ] Scenario B: 3 round chạy, **mỗi round có** `round_timeout` + `partial_aggregation` events. round_log.csv 3 row với `round_status=partial`. Accuracy hợp lý (>50% với 1 client IID half data)
 - [ ] Scenario C: 3 round chạy, **mỗi round có** `round_timeout` + `round_skipped` events. round_log.csv **3 row** với `round_status=skipped`, `num_clients_received=0`, metric columns rỗng. Server set DONE cuối cùng
@@ -382,6 +384,8 @@ python tests\_smoke_server.py
    - `min_clients` = ngưỡng tối thiểu để aggregate (≤ expected_count)
 
 8. **GetGlobalModel KHÔNG validate state trong M6** (giữ behavior M3): Client's poll-then-pull pattern (`wait_for_new_round_or_done` chỉ gọi `GetGlobalModel` khi state=TRAINING) + server reject `stale_round`/`state_not_training` ở SubmitUpdate đảm bảo correctness. Nếu race window (status=TRAINING → AGGREGATING giữa poll và pull) xảy ra, client pull được OLD model, train xong → SubmitUpdate reject → exit 3. Safe-by-chain. M6 KHÔNG thêm check ở GetGlobalModel để giữ scope hẹp.
+
+   **Observability tradeoff:** thêm `state=<NAME>` vào message của event `model_pulled` (ngoài `bytes=...`) để post-mortem analysis biết client có pull đúng lúc state=TRAINING hay race vào AGGREGATING/EVALUATING. Ví dụ: `model_pulled bytes=1689280 state=TRAINING`.
 
 9. **Phase 2 eval CPU bottleneck (~1s) trong khi shutdown**: KHÔNG block shutdown logic — `state.shutdown=True` được set ngay trong main thread, aggregation thread sẽ thấy ở Phase 3 (commit check) hoặc Phase 1 (next iter). **Shutdown expected < 2s, KHÔNG đảm bảo cứng** nếu vừa vào Phase 2 — phải đợi eval hiện tại (~1s). Có thể tối ưu bằng cách check `state.shutdown` trước commit Phase 3 nếu muốn fail-fast hơn.
 

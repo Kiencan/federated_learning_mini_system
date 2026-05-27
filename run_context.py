@@ -9,12 +9,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import random
-import shutil
 import socket
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -74,14 +72,28 @@ def _gpu_info() -> dict[str, Any]:
 
 
 def create_run_dir(config: dict, config_path: str) -> RunContext:
-    """Tạo {results_root}/{experiment_name}/{run_id}/ và snapshot config."""
+    """Tạo {results_root}/{experiment_name}/{run_id}/ và snapshot RESOLVED config.
+
+    Snapshot dùng yaml.safe_dump(config, ...) thay vì copy file gốc — để
+    `config.yaml` trong run_dir phản ánh đúng CLI overrides (vd --num-rounds 5,
+    --data-split noniid) thay vì giá trị default trong config.yaml gốc.
+
+    Fix tech debt từ M3 (M5.0): trước đây shutil.copyfile(config_path, snapshot)
+    copy file gốc → snapshot không khớp với run thật khi user pass CLI flag.
+    """
     run_id = config.get("run_id") or datetime.now().strftime("%Y-%m-%d_%H%M")
     run_dir = Path(config["results_root"]) / config["experiment_name"] / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
     snapshot = run_dir / "config.yaml"
-    if Path(config_path).resolve() != snapshot.resolve():
-        shutil.copyfile(config_path, snapshot)
+    with snapshot.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(
+            config,
+            f,
+            default_flow_style=False,
+            allow_unicode=True,
+            sort_keys=False,
+        )
 
     return RunContext(config=config, run_dir=run_dir, run_id=run_id, config_path=snapshot)
 

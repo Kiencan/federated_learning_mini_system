@@ -172,6 +172,15 @@ def run_aggregation_loop(state: ServerState, servicer: FederatedServicer):
 
         # ── Phase 3: commit + advance (lock held, nhanh) ─────────────────────
         with state.condition:
+            # Guard: kiểm tra state vẫn như khi Phase 1 snapshot (self-defensive)
+            if state.shutdown:
+                return
+            if state.current_round != round_id or state.state != federated_pb2.RoundStatus.AGGREGATING:
+                state.log_event(
+                    "commit_aborted",
+                    message=f"unexpected_state (round={state.current_round}, state={state.state})",
+                )
+                continue  # bỏ kết quả Phase 2, không corrupt model
             state.model.load_state_dict(new_state_dict)
             state.log_event("aggregation_done", message=f"duration_ms={agg_ms:.1f}")
             state.log_event("evaluation_done", message=f"accuracy={accuracy:.4f}")
@@ -232,7 +241,12 @@ def main():
         server.stop(grace=2).wait()
 ```
 
-Vì heavy work (Phase 2) **không giữ lock**, set `shutdown=True` luôn được lock ngay → thread thoát trong Phase 1 hoặc Phase 3 sau ≤1 iter của `condition.wait(timeout=1)`. **Acceptance "thread join < 2s" được đảm bảo.**
+Vì heavy work (Phase 2) **không giữ lock**, set `shutdown=True` luôn được lock ngay. Thread sẽ thoát:
+- Trong Phase 1: ≤1 iter của `condition.wait(timeout=1)` → <1s
+- Trong Phase 2: chờ eval hiện tại xong (~1s), Phase 3 thấy `shutdown=True` và return → ≤eval duration
+- Trong Phase 3: thấy `shutdown=True` ngay → <10ms
+
+**Acceptance "thread join < 2s" expected, không guaranteed cứng** nếu kill ngay khi Phase 2 mới start eval. Trong thực tế ~1s tối đa.
 
 ### 6.6 Remove cũ `_aggregate_and_evaluate_locked` — tách thành 2 hàm pure
 
@@ -311,8 +325,8 @@ python server.py --num-rounds 3 --wait-timeout 5 --min-clients 1 --run-id m6_sce
 **Kỳ vọng:**
 - Mỗi round: 0 client submit, hết 5s → log `round_timeout received=0/2` → log `round_skipped` → advance KHÔNG aggregate
 - 3 round chạy được (~15s tổng)
-- events.csv có 3 `round_skipped` events
-- round_log.csv: có thể có row hoặc bỏ qua — quyết định trong implementation (recommend: vẫn 1 row với `num_clients_received=0`, accuracy/loss giữ giá trị eval cuối cùng hoặc 0)
+- events.csv có **3 `round_timeout` + 3 `round_skipped` events** (cả hai cho mỗi round)
+- round_log.csv: **PHẢI có 3 row** với `round_status=skipped`, `num_clients_received=0`, các cột accuracy/loss/per-class/timings = `""` (chốt theo §6.7)
 
 ### 7.4 Smoke test backward compat (`_smoke_server.py`)
 
@@ -331,9 +345,9 @@ python tests\_smoke_server.py
 ## 8. Acceptance criteria
 
 - [ ] Server start có background aggregation thread, Ctrl+C shutdown sạch (thread join < 2s)
-- [ ] Scenario A: 3 round chạy không stuck, **không có** event timeout/skip/partial
-- [ ] Scenario B: 3 round chạy, **mỗi round có** `partial_aggregation` event, accuracy hợp lý (>50% với 1 client IID half data)
-- [ ] Scenario C: 3 round chạy, **mỗi round có** `round_skipped` event, server vẫn advance và set DONE cuối cùng
+- [ ] Scenario A: 3 round chạy không stuck, **không có** event timeout/skip/partial. round_log.csv 3 row với `round_status=ok`
+- [ ] Scenario B: 3 round chạy, **mỗi round có** `round_timeout` + `partial_aggregation` events. round_log.csv 3 row với `round_status=partial`. Accuracy hợp lý (>50% với 1 client IID half data)
+- [ ] Scenario C: 3 round chạy, **mỗi round có** `round_timeout` + `round_skipped` events. round_log.csv **3 row** với `round_status=skipped`, `num_clients_received=0`, metric columns rỗng. Server set DONE cuối cùng
 - [ ] `tests/_smoke_server.py` vẫn pass 9/9 case khi gọi với `--min-clients 2`
 - [ ] Config snapshot có `wait_timeout` và `min_clients` đúng giá trị runtime
 - [ ] Cross-machine Scenario A pass (acc tương đương M4.4 IID hoặc M5.4 Non-IID)
@@ -341,21 +355,35 @@ python tests\_smoke_server.py
 
 ## 9. Rủi ro & lưu ý
 
-1. **Race condition giữa aggregation thread và SubmitUpdate**: Cả 2 cùng giữ `self.lock` qua `Condition`. Đảm bảo state transition (TRAINING ↔ AGGREGATING ↔ TRAINING) luôn trong lock. Test bằng cách dùng thread sanitizer hoặc nhìn log.
+1. **Race condition giữa aggregation thread và SubmitUpdate**: Cả 2 cùng giữ `self.lock` qua `Condition`. State transition (TRAINING → AGGREGATING ở Phase 1, AGGREGATING → TRAINING/DONE ở Phase 3) đều trong lock. SubmitUpdate trong Phase 2 sẽ thấy `state=AGGREGATING` và reject cleanly.
 
-2. **Deadlock risk khi shutdown**: Aggregation thread phải check `state.shutdown` thường xuyên. `condition.wait(timeout=X)` đảm bảo không block vô tận.
+2. **Deadlock risk khi shutdown**: Aggregation thread phải check `state.shutdown` thường xuyên. `condition.wait(timeout=X)` đảm bảo không block vô tận. Vì Phase 2 không giữ lock, set `shutdown=True` luôn lock được ngay.
 
-3. **`_aggregate_and_evaluate_locked` đang gọi `_advance_to_next_round_locked`**: cần đảm bảo lock vẫn được giữ qua cả 2 hàm (caller đã giữ). Document rõ.
+3. **Phase 3 commit phải guard bằng `round_id` + `state` check**: Trong Phase 2 không giữ lock, nên (về lý thuyết) ai đó có thể đã thay đổi state. M6 hiện chỉ có 1 aggregation thread → không xảy ra, nhưng để code self-defensive:
+   ```python
+   with state.condition:
+       if state.current_round != round_id or state.state != AGGREGATING:
+           state.log_event("commit_aborted", message=f"unexpected state at commit")
+           continue  # bỏ kết quả Phase 2, không corrupt model
+       state.model.load_state_dict(new_state_dict)
+       ...
+   ```
+   Giúp tránh corrupt model nếu M7 thêm cancel/shutdown logic.
 
-4. **Round counter có nhảy đúng không?** Khi skip round vẫn advance counter. Nếu num_rounds=3 và 3 round đều skip → state=DONE, round_log có thể empty hoặc 3 row "skip". Tùy thiết kế.
+4. **Round counter khi 3 round đều skip**: round_log.csv **phải có đúng 3 row** với `round_status=skipped` (chốt theo §6.7). State cuối cùng vẫn là DONE. Không bị empty.
 
-5. **Client polling stale_round**: Nếu client A submit chậm sau khi server đã timeout + advance, ack sẽ là `stale_round` → exit 3. Đây là behavior đã có từ M3, không cần đổi.
+5. **Client polling stale_round**: Nếu client A submit chậm sau khi server đã timeout + advance, ack sẽ là `stale_round` → exit 3. Đây là behavior đã có từ M3.
 
-6. **`min_clients=1` impact lên M3-M5 tests**: tất cả test trước M6 ngầm assume `min_clients=2`. M6.3 cần update _smoke_server.py invocation docs (CLI override) hoặc tách test có/không min_clients.
+6. **`min_clients=1` impact lên M3-M5 tests**: tất cả test trước M6 ngầm assume `min_clients=2`. M6.3 update **docstring** của `_smoke_server.py` ghi rõ prereq — script không tự start server, user phải gọi server với `--min-clients 2` thủ công.
 
-7. **`expected_count = len(expected_client_ids)`**: cần làm rõ khái niệm "expected" (config whitelist) vs "received" (đã submit) vs "min" (threshold aggregate). Comment trong code.
+7. **`expected_count = len(expected_client_ids)`**: làm rõ 3 khái niệm trong comment code:
+   - `expected_count` = số client whitelist (config)
+   - `received_count` = số client đã submit hợp lệ trong round hiện tại
+   - `min_clients` = ngưỡng tối thiểu để aggregate (≤ expected_count)
 
-8. **Eval CPU bottleneck**: aggregation thread sẽ chạy eval ~1s. Trong thời gian này, `condition.wait()` của thread khác vẫn block? Không, vì `_aggregate_and_evaluate_locked` đang giữ lock — đúng. Aggregation thread đơn — không có race.
+8. **GetGlobalModel KHÔNG validate state trong M6** (giữ behavior M3): Client's poll-then-pull pattern (`wait_for_new_round_or_done` chỉ gọi `GetGlobalModel` khi state=TRAINING) + server reject `stale_round`/`state_not_training` ở SubmitUpdate đảm bảo correctness. Nếu race window (status=TRAINING → AGGREGATING giữa poll và pull) xảy ra, client pull được OLD model, train xong → SubmitUpdate reject → exit 3. Safe-by-chain. M6 KHÔNG thêm check ở GetGlobalModel để giữ scope hẹp.
+
+9. **Phase 2 eval CPU bottleneck (~1s) trong khi shutdown**: KHÔNG block shutdown logic — `state.shutdown=True` được set ngay trong main thread, aggregation thread sẽ thấy ở Phase 3 (commit check) hoặc Phase 1 (next iter). **Shutdown expected < 2s, KHÔNG đảm bảo cứng** nếu vừa vào Phase 2 — phải đợi eval hiện tại (~1s). Có thể tối ưu bằng cách check `state.shutdown` trước commit Phase 3 nếu muốn fail-fast hơn.
 
 ## 10. Sau M6 xong
 

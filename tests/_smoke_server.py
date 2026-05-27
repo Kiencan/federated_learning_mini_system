@@ -1,9 +1,21 @@
-"""Smoke test M3 server — chạy 5 case validation + 1 case happy path.
+"""Smoke test M3/M6 server — 9 case validation + happy path + async aggregation.
 
-Chạy sau khi server đã start trên 127.0.0.1:50051 với --num-rounds 1.
-Test này chỉ dùng cho dev kiểm tra nhanh server M3 mà chưa có client M3 thật
-(Máy 2 đang dev song song). Sẽ xóa hoặc thay bằng test_stale_update.py
-sau khi M3.8 merge.
+PREREQ: server đã start trên 127.0.0.1:50051. Recommend command:
+
+    python server.py --num-rounds 1 --min-clients 2 --run-id smoke
+
+  - `--num-rounds 1` để case 7 check state=DONE sau aggregation
+  - `--min-clients 2` BẮT BUỘC từ M6: nếu min_clients=1 (default M6),
+    server sẽ aggregate ngay sau case 5 (client-0 valid submit) →
+    case 6 (duplicate) sẽ test state_not_training thay vì duplicate_update
+    → false-fail. Override --min-clients 2 đảm bảo server chờ cả 2 client
+    trước khi aggregate.
+
+M6 timing: case 7 (SubmitUpdate client-1) trigger aggregation BACKGROUND
+thread (~1s eval). Test poll GetRoundStatus tối đa 5s đợi state=DONE.
+
+Test này dùng để dev kiểm tra nhanh server. test_stale_update.py (M3.8)
+focus hẹp hơn vào 4 validation case của plan §9.2.
 """
 from __future__ import annotations
 
@@ -83,16 +95,24 @@ def main():
         assert not ack.accepted
         assert ack.message == "duplicate_update"
 
-        # CASE 6: SubmitUpdate — client-1 (trigger aggregation)
-        print("[6] SubmitUpdate client-1 (will trigger aggregation, may take few sec)...")
+        # CASE 6: SubmitUpdate — client-1 (trigger async aggregation in M6)
+        print("[6] SubmitUpdate client-1 (will trigger background aggregation)...")
         ack = stub.SubmitUpdate(make_update(client_id="client-1", round_id=1))
         print(f"[6] SubmitUpdate client-1: accepted={ack.accepted}")
         assert ack.accepted
 
-        # CASE 7: After DONE, server should reject further submits
-        st = stub.GetRoundStatus(federated_pb2.Empty())
+        # CASE 7: poll for DONE (M6: aggregation is async, ~1s eval delay)
+        import time
+        st = None
+        for _ in range(25):  # poll tối đa 5s (25 × 200ms)
+            st = stub.GetRoundStatus(federated_pb2.Empty())
+            if st.state == federated_pb2.RoundStatus.DONE:
+                break
+            time.sleep(0.2)
         print(f"[7] post-agg status: state={federated_pb2.RoundStatus.State.Name(st.state)}")
-        assert st.state == federated_pb2.RoundStatus.DONE
+        assert st.state == federated_pb2.RoundStatus.DONE, (
+            f"Expected DONE within 5s, got {federated_pb2.RoundStatus.State.Name(st.state)}"
+        )
 
         # CASE 8: Submit after DONE should be rejected with state_not_training
         ack = stub.SubmitUpdate(make_update(client_id="client-0", round_id=1))

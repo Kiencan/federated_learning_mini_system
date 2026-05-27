@@ -13,9 +13,13 @@ seed: 42                  # set cho random, numpy, torch
 device: "cuda"            # cuda | cpu — server có thể override "cpu" để không tranh GPU
 
 # Distributed (federated only)
-wait_timeout: 15          # giây — chờ tối đa client gửi update mỗi round (M6+)
-min_clients: 2            # tối thiểu để aggregate. M3-M5: 2. M6+ về 1 cho fault tolerance.
-expected_client_ids:      # whitelist cho M3-M5. M6 mở rộng cho dynamic registration.
+wait_timeout: 30          # giây — chờ tối đa client gửi update mỗi round
+                          # M6+ default: 30s đủ cover Windows Python startup + train (~10s + 6s)
+                          # Override --wait-timeout 10 cho test fast (Scenario B)
+                          # Override --wait-timeout 5 cho test Scenario C
+min_clients: 1            # tối thiểu để aggregate. M6+ default: 1 cho fault tolerance.
+                          # Override --min-clients 2 cho M3 backward-compat smoke test.
+expected_client_ids:      # whitelist cho M3-M6. M7+ có thể mở dynamic registration.
   - "client-0"
   - "client-1"
 server_addr: "127.0.0.1:50051"  # đổi sang LAN IP khi deploy 2 máy

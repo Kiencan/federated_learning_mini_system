@@ -65,7 +65,7 @@ expected_client_ids:      # vẫn 2 client
 | # | Subtask | File | Owner | Branch | Estimate |
 |---|---|---|---|---|---|
 | M6.1 | CLI flags `--min-clients` (int), `--wait-timeout` (float) vào `build_cli_parser` + map cả 2 trong `cli_overrides` | `run_context.py` | **Máy 1** | `feature/m6-server-async-agg` (cùng branch với M6.2) | 10 min |
-| M6.2 | Server refactor: background thread + 3-phase lock design (snapshot → heavy work no-lock → commit) + 3 paths + new events + `round_status` cột mới | `server.py` | **Máy 1** | `feature/m6-server-async-agg` | 90 min |
+| M6.2 | Server refactor: background thread + 3-phase lock design (snapshot → heavy work no-lock → commit) + 3 paths + new events (`round_timeout`, `partial_aggregation`, `round_skipped`, `commit_aborted`) + `round_status` cột mới + **add `state=<NAME>` vào message của `model_pulled` event** (observability — xem §9.8) | `server.py` | **Máy 1** | `feature/m6-server-async-agg` | 90 min |
 | M6.3 | Update docstring `tests/_smoke_server.py` ghi rõ prereq: "server phải start với `--min-clients 2` để case 4 (duplicate) không bị aggregate sớm". KHÔNG sửa logic script — script không tự start server | `tests/_smoke_server.py` (docstring only) | **Máy 1** | (cùng branch) | 5 min |
 | M6.4 | Test Scenario A (both fast, no timeout), B (1 client only, hit timeout), C (0 clients, skip round) localhost | (run) | **Máy 1** | — | 25 min |
 | M6.5 | Cross-machine test Scenario A + B | (run) | **Cả 2** | — | 15 min |

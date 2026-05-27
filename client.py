@@ -23,6 +23,7 @@ from __future__ import annotations
 import socket
 import sys
 import time
+from collections import Counter
 
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -32,7 +33,7 @@ import grpc
 import torch
 import torch.nn.functional as F
 
-from data_partition import load_mnist, make_loader, partition_iid
+from data_partition import load_mnist, make_loader, partition_iid, partition_noniid_pathological
 from model import MnistCNN, load_state_dict_from_bytes, serialize_state_dict
 from proto import federated_pb2, federated_pb2_grpc
 from run_context import build_cli_parser, cli_overrides, load_config, set_seed
@@ -233,9 +234,68 @@ def do_one_round(
 
 def run_federated(args, cfg: dict, server_addr: str) -> None:
     client_id = args.client_id
-    print(f"[client {client_id}] connecting to {server_addr}")
     print(f"[client {client_id}] shard={args.shard_id}/{args.num_shards}")
 
+    # ── Setup truoc ket noi (fail-fast: validate config truoc khi mo channel) ──
+    # Device
+    device_str = cfg.get("device", "cpu")
+    device = torch.device(device_str)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        print(f"[client {client_id}] WARN: CUDA not available, fallback to CPU")
+        device = torch.device("cpu")
+
+    # MNIST shard + DataLoader — tao 1 lan, reuse qua cac round
+    train_set, _ = load_mnist(data_root=cfg.get("data_root", "./data"))
+
+    data_split = cfg.get("data_split", "iid")
+
+    # Step 1: Dispatch partition (chua in shard-specific info)
+    if data_split == "noniid":
+        if args.num_shards != 2:
+            print(
+                f"[client {client_id}] ERROR: noniid requires --num-shards 2, "
+                f"got {args.num_shards}"
+            )
+            sys.exit(4)
+        shards = partition_noniid_pathological(train_set, num_clients=2)
+        print(f"[client {client_id}] split=noniid (pathological)")
+    elif data_split == "iid":
+        shards = partition_iid(train_set, num_clients=args.num_shards, seed=cfg["seed"])
+        print(f"[client {client_id}] split=iid (num_shards={args.num_shards})")
+    else:
+        print(
+            f"[client {client_id}] ERROR: unknown data_split={data_split!r}, "
+            f"expected iid|noniid"
+        )
+        sys.exit(4)
+
+    # Step 2: Validate shard_id TRUOC khi in shard-specific info (tranh in label sai)
+    if not (0 <= args.shard_id < len(shards)):
+        print(
+            f"[client {client_id}] ERROR: --shard-id {args.shard_id} out of range "
+            f"[0, {len(shards) - 1}] (split={data_split}, num_shards={args.num_shards})"
+        )
+        sys.exit(4)
+
+    shard = shards[args.shard_id]
+
+    # Step 3: In class distribution THUC TE — source of truth cho debug Non-IID
+    labels = [int(train_set.targets[i]) for i in shard.indices]
+    dist = dict(sorted(Counter(labels).items()))
+    print(
+        f"[client {client_id}] shard {args.shard_id} "
+        f"size={len(shard)} class_distribution={dist}"
+    )
+
+    loader = make_loader(shard, batch_size=cfg["batch_size"], shuffle=True)
+    print(f"[client {client_id}] device={device}")
+
+    # Metadata co dinh (khong doi qua cac round)
+    gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else ""
+    cuda_ver = torch.version.cuda or ""
+
+    # ── Ket noi server sau khi da validate xong ───────────────────────────────
+    print(f"[client {client_id}] connecting to {server_addr}")
     options = [
         ("grpc.max_send_message_length", 16 * 1024 * 1024),
         ("grpc.max_receive_message_length", 16 * 1024 * 1024),
@@ -249,28 +309,6 @@ def run_federated(args, cfg: dict, server_addr: str) -> None:
             sys.exit(1)
 
         stub = federated_pb2_grpc.FederatedLearningStub(channel)
-
-        # ── Setup 1 lan truoc outer loop ─────────────────────────────────────
-        # Device
-        device_str = cfg.get("device", "cpu")
-        device = torch.device(device_str)
-        if device.type == "cuda" and not torch.cuda.is_available():
-            print(f"[client {client_id}] WARN: CUDA not available, fallback to CPU")
-            device = torch.device("cpu")
-
-        # MNIST shard + DataLoader — tao 1 lan, reuse qua cac round
-        train_set, _ = load_mnist(data_root=cfg.get("data_root", "./data"))
-        shards = partition_iid(train_set, num_clients=args.num_shards, seed=cfg["seed"])
-        shard = shards[args.shard_id]
-        loader = make_loader(shard, batch_size=cfg["batch_size"], shuffle=True)
-        print(
-            f"[client {client_id}] shard size={len(shard)} samples "
-            f"device={device}"
-        )
-
-        # Metadata co dinh (khong doi qua cac round)
-        gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else ""
-        cuda_ver = torch.version.cuda or ""
 
         # ── Outer multi-round loop ────────────────────────────────────────────
         last_completed_round = 0

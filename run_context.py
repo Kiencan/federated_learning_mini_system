@@ -140,6 +140,13 @@ def build_cli_parser(description: str) -> argparse.ArgumentParser:
     p.add_argument("--device", default=None)
     p.add_argument("--experiment-name", default=None)
     p.add_argument("--run-id", default=None)
+    p.add_argument(
+        "--data-split",
+        choices=["iid", "noniid"],
+        default=None,
+        help="data partition mode (override config.yaml data_split). "
+             "Server: chỉ snapshot vào config; Client: dispatch partition function.",
+    )
     return p
 
 
@@ -154,5 +161,6 @@ def cli_overrides(args: argparse.Namespace) -> dict[str, Any]:
         "device": args.device,
         "experiment_name": args.experiment_name,
         "run_id": args.run_id,
+        "data_split": args.data_split,
     }
     return {k: v for k, v in mapping.items() if v is not None}

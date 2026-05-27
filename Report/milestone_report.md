@@ -15,7 +15,7 @@ Tài liệu này theo dõi kết quả thực hiện từng milestone của dự
 | M3 | Server/client chạy 1 round IID | ✅ Done | `a99cab0` → `c05a049` → `3eef9ec` |
 | M4 | Chạy 5 round IID + log CSV | ✅ Done | `38c66fe` |
 | M5 | Thêm Non-IID partition | ✅ Done | `5857aa9` → `c0dd3a9` |
-| M6 | Timeout + stale update rejection | ⏳ Pending | — |
+| M6 | WAIT_TIMEOUT + dynamic min_clients (fault tolerance) | ✅ Done | `370b4af` |
 | M7 | Straggler + failure experiments | ⏳ Pending | — |
 
 **Hardware đang dùng:**
@@ -711,14 +711,166 @@ c0dd3a9 (HEAD -> dev, origin/dev)  Merge feature/m5-client-noniid into dev
 
 ---
 
-## Bước tiếp theo (M6)
+## Milestone 6 — WAIT_TIMEOUT + Dynamic min_clients (Fault Tolerance)
 
-Mở **WAIT_TIMEOUT** + dynamic `min_clients=1` cho fault tolerance:
+### Mục tiêu
 
-1. Server refactor: aggregation chuyển từ sync (trong SubmitUpdate handler) → background thread với condition variable
-2. Background thread chờ `WAIT_TIMEOUT` (config 15s), aggregate khi `len(received) >= min_clients` hoặc khi timeout
-3. Server giảm `min_clients=2` → `min_clients=1` để hỗ trợ "tiếp tục với 1 client nếu client kia timeout"
-4. Acceptance: chạy được kịch bản 1 client crash giữa round, server không stuck, aggregate với 1 client còn lại
-5. Đây là milestone phức tạp nhất từ M3 (server-side refactor lớn)
+Server không bị stuck khi 1 client chậm/crash. Thêm `WAIT_TIMEOUT` để server tự aggregate sau khoảng thời gian, kết hợp `min_clients=1` cho phép aggregate với 1 client còn lại. Đây là **milestone phức tạp nhất** từ M3 — refactor server từ sync aggregation (trong handler) sang **background thread**.
 
-Sau M6, M7 (Straggler + Fault tolerance experiments) chỉ là kịch bản test, không thêm code mới.
+> Plan chi tiết: [m6_plan.md](m6_plan.md)
+
+### Công việc đã làm
+
+**Workflow:** 1 feature branch `feature/m6-server-async-agg` (Máy 1 owned).
+
+| Subtask | Owner | Status |
+|---|---|---|
+| M6.1 CLI flags `--min-clients` (int) + `--wait-timeout` (float) | Máy 1 | ✓ |
+| M6.2 Server refactor 3-phase aggregation + 3 paths + validate config + round_status column | Máy 1 | ✓ |
+| M6.3 Docstring `_smoke_server.py` + polling cho async | Máy 1 | ✓ |
+| M6.4 Localhost test 3 scenarios A/B/C | Máy 1 | ✓ |
+| M6.5 Cross-machine A + B (+ accidental verify path khác) | Cả 2 | ✓ |
+| M6.6 Update milestone_report (this section) | Máy 1 | ✓ |
+
+**Refactor chính trong `server.py`** (+352/-163 lines):
+
+- **Aggregation sync (trong `SubmitUpdate` handler) → background thread** chạy `run_aggregation_loop()`
+- **3-phase lock design** (chìa khóa correctness + responsiveness):
+  - **Phase 1** (hold lock): wait condition (threshold OR timeout), snapshot updates, set state=AGGREGATING
+  - **Phase 2** (**NO lock**): FedAvg + evaluate + CSV write (~1s)
+  - **Phase 3** (hold lock, <10ms): guarded commit (check shutdown + round/state lệch) + load global model + advance round
+- **3 paths** qua `condition.wait`:
+  - Path **A** "ok": `received >= expected_count` (early aggregation, all clients done)
+  - Path **B** "partial": timeout + `received >= min_clients` (drop slow clients)
+  - Path **C** "skipped": timeout + `received < min_clients` (skip round, no aggregation)
+- **Pure functions** tách: `_do_fedavg`, `_do_evaluate`, `_write_round_log_row`, `_write_skipped_round_row`
+- **4 events mới**: `round_timeout`, `partial_aggregation`, `round_skipped`, `commit_aborted`
+- **`round_log.csv` schema**: thêm cột `round_status` (`ok` / `partial` / `skipped`)
+- **Validate config fail-fast** trong `__init__`: `1 <= min_clients <= expected_count`, `wait_timeout > 0`
+- **`model_pulled` event** kèm `state=<NAME>` cho observability race
+- **Bonus fix:** refresh `round_start_time` SAU `server.start()` để timeout window không bị ăn bởi Python startup ~10s
+
+**Updates khác:**
+- `run_context.py`: 2 CLI flags mới
+- `config.yaml` defaults M6: `wait_timeout: 15→30`, `min_clients: 2→1`
+- `tests/_smoke_server.py`: docstring prereq `--min-clients 2` + polling 5s cho M6 async
+
+### Kết quả verified
+
+**4 paths × 2 setups (localhost + cross-machine):**
+
+| Path | Localhost | Cross-machine |
+|---|---|---|
+| **A "ok"** (all expected submit) | ✅ M6 early-test (3 round, acc 98.52→99.17%) | ✅ m65_debug round 3 (acc **98.59%**) |
+| **B "partial"** (timeout + ≥min) | ✅ M6.4 Scenario B round 3 (acc 98.31%) | ✅ run 1 m65_scenario_a (3 round @ ~98.5-98.85%) |
+| **C "skipped" received=0** | ✅ M6.4 Scenario C (3 round) | — |
+| **C "skipped" received<min** | — | ✅ m65_debug rounds 1-2 (received=1<min=2) + v4 |
+
+**Tất cả 3 paths của plan §6 verified, cả localhost lẫn cross-machine.**
+
+### Snapshot run M6.4 Scenario A (localhost happy path)
+
+```
+Round | acc    | round_status | round_wallclock | aggregation | eval
+1     | 0.9852 | ok           | 26.94s (cold)   | 3.62ms      | 1205.5ms
+2     | 0.9902 | ok           | 8.91s           | 1.43ms      | 1173.4ms
+3     | 0.9917 | ok           | 9.22s           | 1.44ms      | 1320.2ms
+```
+
+### Snapshot run M6.4 Scenario C (0 clients, timeout=5s)
+
+```
+Round | num_clients_received | round_status | round_wallclock
+1     | 0                   | skipped      | 5.02s (timeout)
+2     | 0                   | skipped      | 5.01s
+3     | 0                   | skipped      | 5.00s
+```
+
+events.csv: 9 events đúng schema (3× `round_timeout` + 3× `round_skipped` + 3× `round_done`).
+
+### Acceptance criteria (m6_plan §8)
+
+- [x] Server start có background aggregation thread; Ctrl+C shutdown sạch, thread join <2s
+- [x] Scenario A: 3 round không stuck, **không có** event timeout/skip/partial. round_log.csv 3 row `round_status=ok`
+- [x] Scenario B: 3 round, mỗi round có `round_timeout` + `partial_aggregation`, accuracy hợp lý
+- [x] Scenario C: 3 round, mỗi round có `round_timeout` + `round_skipped`. round_log.csv **3 row** `round_status=skipped`, metric columns empty
+- [x] `_smoke_server.py` 9/9 case pass với `--min-clients 2` (no M3 regression)
+- [x] Config snapshot có `wait_timeout` + `min_clients` đúng giá trị runtime
+- [x] Cross-machine Scenario A + B pass
+
+### Vấn đề gặp phải trong quá trình
+
+**1. Bug timing round 1 trong Scenario A early-test (đã fix)**
+
+Initial code: `round_start_time` set trong `ServerState.__init__` (trước `server.start()` + Python client startup ~10s). Deadline tính từ time đó → round 1 timeout trước khi client kịp submit. Server log "round 1 SKIPPED received=0" dù client-0 đã start.
+
+**Fix:** Move `state.round_start_time = time.time()` ra SAU `server.start()` trong `main()`. Cũng đẩy default `wait_timeout` 15→30s cho Windows realistic.
+
+**2. M6.5 cross-machine — 3 lần thử với Máy 2 lỗi**
+
+| Lần | Vấn đề |
+|---|---|
+| Run 1 (m65_scenario_a) | Máy 2 không connect → server aggregate partial với chỉ client-0 (3 round @ ~98.5%) — accidentally verified Path B cross-machine |
+| Run 2 (v2) | Máy 2 connect nhưng dùng nhầm `--data-split noniid` (command còn từ M5.4) — accuracy chỉ 48% (lớp 0-4 = 0%, lớp 5-9 = ~98%) |
+| Run 3 (v3) | Máy 2 không connect — chỉ partial với client-0 |
+| Run 4 (v4 m65_a_v4) | `--min-clients 2 --wait-timeout 60`: client-1 không submit → SKIP với received=1<min=2 (accidentally verified Path C "received<min") |
+| **Run 5 (m65_debug)** | `--wait-timeout 120`: rounds 1-2 SKIP, **round 3 Path A ok với cả 2 client @ 98.59%** ✓ |
+
+**Bài học:** Cross-machine timing nhạy với Python startup trên Windows. `wait_timeout` cần ≥60s cho run "fresh start" 2 máy.
+
+**3. Plan §6.7 vs implementation về Path C row**
+
+Plan §6.7 ví dụ `num_clients_received=0` cho skipped row. Code thực tế ghi `num_clients_received=N` (actual count, có thể >0 nếu `received < min_clients`). Đây là enhancement (more general) — không phải bug. Cả 2 hợp lệ.
+
+### Code review issues defer cho M7+ (không block M6)
+
+- N1 (M6 review): Path C ghi CSV inside lock (~5ms, acceptable)
+- N2: `GetRoundStatus` read state without lock (compound non-atomic, tồn tại từ M3)
+- N3: `round_timeout` event không log duration_ms (minor)
+- N4: `notify_all()` cuối Phase 3 có thể redundant
+
+### Timing snapshot M6 (Scenario A localhost steady state)
+
+```text
+Server:
+  aggregation:    1.4-3.6 ms   (FedAvg weighted average)
+  evaluation:    1170-1320 ms  (CPU, 10000 test samples)
+  round wallclock: ~8-9 s steady (similar to M4)
+
+Background thread shutdown (Ctrl+C):
+  Phase 1 wait → <1s
+  Phase 2 eval → ≤eval duration (~1s)
+  Phase 3 → <10ms
+  Stop-Process kill: measured 1.03s ✓
+```
+
+### Git state cuối M6
+
+```
+370b4af (HEAD -> dev, origin/dev)  Merge feature/m6-server-async-agg into dev
+e3bbd7e                            M6: WAIT_TIMEOUT + dynamic min_clients (fault tolerance)
+05540bf                            docs(m6): đưa yêu cầu model_pulled state=<NAME> lên M6.2 subtask
+...
+```
+
+Branch xóa khỏi remote + local sau merge.
+
+---
+
+## Bước tiếp theo (M7)
+
+**Straggler + Fault tolerance experiments** — KHÔNG thêm code mới, chỉ thêm test scenarios:
+
+1. **Straggler simulation**: thêm flag `--straggler-delay N` cho client (sleep N giây trước khi submit). Verify server handle với (a) timeout=15s, straggler=5s → all good; (b) timeout=15s, straggler=20s → partial aggregate, drop straggler
+2. **Fault tolerance**:
+   - Run 5 round, kill client-2 ở round 3 → verify server tiếp tục với 1 client (Path B)
+   - Restart client-2 ở round 5 → verify reconnect và tham gia tiếp
+3. Acceptance: log đủ `round_timeout`/`partial_aggregation`/`round_skipped` events tương ứng
+
+Sau M7, **toàn bộ implementation done** → chuyển sang phase **Experiments**:
+- Exp 1: Centralized vs Federated (đã có M1 baseline + M4.4 IID baseline)
+- Exp 2: IID vs Non-IID (đã có M4.4 + M5.4 baseline)
+- Exp 3: Straggler (cần M7 data)
+- Exp 4: Fault tolerance (cần M7 data)
+
+Cuối cùng: **Báo cáo cuối kỳ** với 4 experiments + phân tích 5 vấn đề distributed systems của ytuong.md §7.

@@ -105,7 +105,21 @@ with snapshot.open("w", encoding="utf-8") as f:
     yaml.safe_dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 ```
 
-Verify sau M5.0 merge: chạy bất kỳ script với CLI override (vd `python server.py --num-rounds 99 --run-id test_snapshot`) → `cat results/.../test_snapshot/config.yaml` phải thấy `num_rounds: 99`, không phải `30` (config gốc).
+**Verify sau M5.0 merge** (không cần chạy training):
+
+```powershell
+# Start server với CLI override num_rounds=99
+python server.py --num-rounds 99 --run-id test_snapshot
+
+# Ngay khi thấy "[server] listening on..." → Ctrl+C để dừng
+# (mục đích chỉ là kiểm tra snapshot được tạo, không cần client)
+
+# Check snapshot
+type results\exp_federated_iid_smoke\test_snapshot\config.yaml
+# Phải thấy: num_rounds: 99 (không phải 30 từ config.yaml gốc)
+```
+
+Nếu thấy `num_rounds: 30` → fix chưa work. Nếu thấy `99` → M5.0 done.
 
 `shutil` import có thể remove (không còn dùng).
 
@@ -144,29 +158,29 @@ shards = partition_iid(train_set, num_clients=args.num_shards, seed=cfg["seed"])
 shard = shards[args.shard_id]
 ```
 
-bằng:
+bằng (lưu ý thứ tự: **dispatch → validate shard_id → in shard info**, tránh in label sai trước khi catch error):
 
 ```python
 # M5:
 train_set, _ = load_mnist(data_root=cfg.get("data_root", "./data"))
 
 data_split = cfg.get("data_split", "iid")
+
+# Step 1: Dispatch partition (chưa in shard-specific info)
 if data_split == "noniid":
     if args.num_shards != 2:
         print(f"[client {client_id}] ERROR: noniid requires --num-shards 2, got {args.num_shards}")
         sys.exit(4)
     shards = partition_noniid_pathological(train_set, num_clients=2)
-    digit_range = "0-4" if args.shard_id == 0 else "5-9"
-    print(f"[client {client_id}] split=noniid (pathological): "
-          f"shard {args.shard_id} = digits {digit_range}")
+    print(f"[client {client_id}] split=noniid (pathological)")
 elif data_split == "iid":
     shards = partition_iid(train_set, num_clients=args.num_shards, seed=cfg["seed"])
-    print(f"[client {client_id}] split=iid: shard {args.shard_id}/{args.num_shards}")
+    print(f"[client {client_id}] split=iid (num_shards={args.num_shards})")
 else:
     print(f"[client {client_id}] ERROR: unknown data_split={data_split!r}, expected iid|noniid")
     sys.exit(4)
 
-# Validation cho CẢ IID lẫn Non-IID: shard_id phải trong khoảng hợp lệ
+# Step 2: Validate shard_id TRƯỚC khi in shard-specific info (tránh in label sai)
 if not (0 <= args.shard_id < len(shards)):
     print(f"[client {client_id}] ERROR: --shard-id {args.shard_id} out of range "
           f"[0, {len(shards) - 1}] (split={data_split}, num_shards={args.num_shards})")
@@ -174,11 +188,11 @@ if not (0 <= args.shard_id < len(shards)):
 
 shard = shards[args.shard_id]
 
-# In class distribution THỰC TẾ (không phải hardcoded label) — hữu ích debug
+# Step 3: In class distribution THỰC TẾ — source of truth cho debug Non-IID
 from collections import Counter
 labels = [int(train_set.targets[i]) for i in shard.indices]
 dist = dict(sorted(Counter(labels).items()))
-print(f"[client {client_id}] shard size={len(shard)} class_distribution={dist}")
+print(f"[client {client_id}] shard {args.shard_id} size={len(shard)} class_distribution={dist}")
 ```
 
 → `--data-split` flag được pickup từ shared `build_cli_parser` (không thêm riêng ở client).
@@ -247,7 +261,7 @@ python client.py --client-id client-0 --shard-id 0 --num-shards 2 --data-split f
 - [ ] 5 round Non-IID chạy end-to-end không stuck (localhost + cross-machine)
 - [ ] `round_log.csv` đủ 5 row, output đúng folder `exp_federated_noniid_smoke/`
 - [ ] **Client-0 nhận data chỉ digits 0-4, Client-1 chỉ 5-9** — verified qua `class_distribution=...` print của client (in giá trị Counter thực tế, không phải hardcoded label). Client-0 phải in `{0: ~5923, 1: ~6742, 2: ~5958, 3: ~6131, 4: ~5842}` (số xấp xỉ MNIST), client-1 in các keys 5-9.
-- [ ] **Accuracy round 5 ≥ 70%** (acceptance NỚI hơn IID — Non-IID khó hội tụ). Nếu <70% nhưng ≥50%, xem §9 risk 1 trước khi kết luận bug.
+- [ ] **Accuracy round 5 ≥ 70%** — acceptance CỨNG. Nếu <70%: M5 chưa pass, NHƯNG không kết luận bug ngay → xem §9 risk 1 (debug procedure 3-tier) để phân biệt bug vs "Non-IID khó hội tụ với config hiện tại". Trong trường hợp sau, có thể cần tune hyperparameter (lr, local_epochs) — coi như scope của Exp 2, không phải M5.
 - [ ] **Per-class accuracy được log và so sánh** với IID baseline. Ghi nhận chênh lệch nếu có; KHÔNG fail M5 nếu pattern lệch không khớp expectation cụ thể (4, 5 thấp) — depend on seed/hyperparameter.
 - [ ] Loss giảm qua các round (cải thiện có giảm, không nhất thiết bằng IID rate, có thể dao động)
 - [ ] Client thoát sạch sau round cuối
@@ -268,7 +282,7 @@ python client.py --client-id client-0 --shard-id 0 --num-shards 2 --data-split f
    
    **Quy trình debug nếu accuracy thấp hơn kỳ vọng:**
    - **< 50%:** nghi bug nghiêm trọng. Verify partition (in `len(shard)` + class distribution), verify state_dict serialization, verify events.csv không có reject lạ. Có thể là model bị reset, FedAvg bị bypass, hoặc partition trả empty.
-   - **50% ≤ acc < 70%:** **chưa nghi bug ngay**. Kiểm tra: (a) shard size đúng (mỗi shard ~30k), (b) per-class accuracy có pattern hợp lý (vd lớp 0-4 cao trên client-0's local view), (c) train_loss có giảm. Nếu system metrics đúng → ghi nhận "Non-IID rất khó hội tụ với config hiện tại" và pass M5. Hyperparameter tuning (lr, local_epochs) là Exp 2 scope, không phải M5.
+   - **50% ≤ acc < 70%:** **chưa nghi bug ngay nhưng M5 CHƯA PASS** (acceptance cứng là ≥70%). Kiểm tra: (a) shard size đúng (mỗi shard ~30k), (b) per-class accuracy có pattern hợp lý, (c) train_loss có giảm. Nếu system metrics đúng → ghi nhận trong report "Non-IID rất khó hội tụ với config hiện tại"; cần tune hyperparameter (lr, local_epochs, hoặc tăng num_rounds) để đẩy ≥70% trước khi đóng M5. Hyperparameter tuning sâu hơn (FedProx, learning rate schedule, v.v.) là Exp 2 scope.
    - **≥ 70%:** pass acceptance.
 
 2. **Per-class accuracy mất cân bằng** là **finding chính** cho báo cáo:
@@ -302,6 +316,13 @@ Khi so sánh IID vs Non-IID, **bắt buộc cùng cấu hình** để chênh l�
 | Setup | Cross-machine (Máy 1 + Máy 2) | Cross-machine (Máy 1 + Máy 2) |
 
 **M4.4 đã chạy đúng config trên** → có thể tái sử dụng `results/exp_federated_iid_smoke/m44_cross/` làm IID baseline. **Không cần rerun IID** nếu Non-IID dùng cùng config.
+
+**Verify trước M5.5:** check folder `results/exp_federated_iid_smoke/m44_cross/round_log.csv` tồn tại và có 5 row. Nếu không (vd kết quả M4.4 đã bị xóa hoặc gitignore loại bỏ trên một máy nào đó) → **rerun IID 5 round** với cùng config trước khi compare:
+
+```powershell
+python server.py --num-rounds 5 --data-split iid --experiment-name exp_federated_iid_smoke --run-id m5_compare_iid
+# + 2 client với --data-split iid
+```
 
 Nếu vì lý do nào đó M5 phải đổi config (vd seed khác): **rerun IID smoke trước** rồi so sánh với run mới đó.
 

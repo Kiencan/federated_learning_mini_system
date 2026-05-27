@@ -261,7 +261,7 @@ python client.py --client-id client-0 --shard-id 0 --num-shards 2 --data-split f
 - [ ] 5 round Non-IID chạy end-to-end không stuck (localhost + cross-machine)
 - [ ] `round_log.csv` đủ 5 row, output đúng folder `exp_federated_noniid_smoke/`
 - [ ] **Client-0 nhận data chỉ digits 0-4, Client-1 chỉ 5-9** — verified qua `class_distribution=...` print của client (in giá trị Counter thực tế, không phải hardcoded label). Client-0 phải in `{0: ~5923, 1: ~6742, 2: ~5958, 3: ~6131, 4: ~5842}` (số xấp xỉ MNIST), client-1 in các keys 5-9.
-- [ ] **Accuracy round 5 ≥ 70%** — acceptance CỨNG. Nếu <70%: M5 chưa pass, NHƯNG không kết luận bug ngay → xem §9 risk 1 (debug procedure 3-tier) để phân biệt bug vs "Non-IID khó hội tụ với config hiện tại". Trong trường hợp sau, có thể cần tune hyperparameter (lr, local_epochs) — coi như scope của Exp 2, không phải M5.
+- [ ] **Accuracy round 5 ≥ 70%** — acceptance CỨNG. Nếu <70%: M5 chưa pass, NHƯNG không kết luận bug ngay → xem §9 risk 1 (debug procedure 3-tier) để phân biệt bug vs "Non-IID khó hội tụ với config hiện tại". Nếu hệ thống đúng nhưng accuracy <70%, ghi nhận nguyên nhân; có thể rerun M5 với cấu hình hợp lý hơn (vd tăng `num_rounds`, `local_epochs`, hoặc đổi `lr`). Phân tích/tuning sâu (FedProx, LR schedule, ...) là scope Exp 2.
 - [ ] **Per-class accuracy được log và so sánh** với IID baseline. Ghi nhận chênh lệch nếu có; KHÔNG fail M5 nếu pattern lệch không khớp expectation cụ thể (4, 5 thấp) — depend on seed/hyperparameter.
 - [ ] Loss giảm qua các round (cải thiện có giảm, không nhất thiết bằng IID rate, có thể dao động)
 - [ ] Client thoát sạch sau round cuối

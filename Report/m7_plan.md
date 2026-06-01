@@ -47,14 +47,15 @@ CLI override (đã có pattern `--data-split`). Validation: `straggler_delay >= 
 
 | Quyết định | Lựa chọn | Lý do |
 |---|---|---|
-| Vị trí sleep | TRƯỚC `SubmitUpdate`, SAU `train_local` + `serialize_state_dict` | Khớp ytuong.md §8 Exp 3: "time.sleep(N) trước khi gửi weights". Train timing measurement không bị ảnh hưởng. |
+| Vị trí sleep | SAU `t_ul = time.perf_counter()` (bên trong upload phase đo) | Delay được tính vào `upload_ms` tự nhiên — semantically đúng (server thấy client slow từ góc upload). Cũng phản ánh trong `round_wallclock_sec`. |
 | Type của `straggler_delay` | `float` | Cho phép subsecond delays (vd 0.5s) nếu cần fine-tune |
-| `straggler_delay < 0` | Argparse reject với rõ error | Defensive |
-| `straggler_delay = 0` | No-op, không print | Default behavior, không log noise |
-| `straggler_delay > 0` | Print thông báo "straggler simulating: sleep Ns" + log timing trong update.timing | Observability |
-| Server validation `--straggler-delay` | KHÔNG validate | Server data-agnostic about client behavior; chỉ snapshot config nếu user pass |
+| `straggler_delay < 0` | Argparse `type=float` KHÔNG tự reject âm — **client `main()` validate** + exit 4 | Argparse chỉ reject non-number, không reject âm |
+| `straggler_delay = 0` | No-op, không print, không sleep | Default behavior, không log noise |
+| `straggler_delay > 0` | Print "STRAGGLER simulating: sleep Ns" | Observability; KHÔNG có field riêng trong update message |
+| Logging timing impact | **`round_log.csv.round_wallclock_sec`** là nguồn chính; `upload_ms` của client cũng bao gồm sleep | events.csv không log timing breakdown — không sửa server để giữ scope hẹp |
+| Server validation `--straggler-delay` | KHÔNG validate (kể cả âm) — chỉ snapshot config | Server data-agnostic; negative value chỉ là bad metadata, không ảnh hưởng runtime. Validation âm chỉ bắt buộc client-side. |
 | CLI flag scope | Đưa vào `build_cli_parser()` chung để server cũng nhận (snapshot config) | Đồng nhất pattern `--data-split` từ M5 |
-| Crash test | Manual Ctrl+C trên Máy 2 (M3.8 đã có precedent) | Tự động hoá phức tạp, M7 scope hẹp |
+| Crash test timing | Manual Ctrl+C, acceptance flexible (không cứng pattern N+M+K rounds) | Cửa sổ kill rất hẹp với client loop tự động — không thể guarantee exact pattern |
 
 ## 5. Subtask breakdown
 
@@ -99,21 +100,36 @@ if straggler_delay < 0:
     sys.exit(4)
 ```
 
-Trong `do_one_round()` SAU `train_local()` + log "train done", TRƯỚC build `ClientUpdate`:
+Trong `do_one_round()` SAU `train_local()` + log "train done", **bên trong upload phase đo** (sau `t_ul = time.perf_counter()`), TRƯỚC `stub.SubmitUpdate`:
 
 ```python
-# M7: straggler simulation (no-op nếu delay=0)
+# Buoc 4: Submit update
+t_ul = time.perf_counter()
+
+# M7: straggler simulation — sleep INSIDE upload measurement window
+# → delay được tính vào upload_ms tự nhiên (server thấy client slow từ network)
+straggler_delay = float(cfg.get("straggler_delay", 0))
 if straggler_delay > 0:
     print(
         f"[client {client_id}] round={round_id} STRAGGLER simulating: "
         f"sleep {straggler_delay}s"
     )
     time.sleep(straggler_delay)
+
+try:
+    ack = stub.SubmitUpdate(...)
+except grpc.RpcError as e:
+    ...
+upload_ms = (time.perf_counter() - t_ul) * 1000  # bao gồm straggler delay
 ```
 
-`straggler_delay` cần truyền vào `do_one_round()` — thêm vào signature. Hoặc lấy từ `cfg["straggler_delay"]` bên trong `do_one_round()` (cfg đã được pass).
+`straggler_delay` đọc từ `cfg` bên trong `do_one_round()` để không phải sửa signature.
 
-→ **Khuyến nghị:** đọc từ `cfg` bên trong `do_one_round` để không phải sửa signature. Đơn giản hơn.
+### 6.3 Hệ quả timing measurement
+
+- **`upload_ms` (client-side)**: bao gồm `straggler_delay` + `serialize_state_dict` time + thật sự network upload + server response wait
+- **`round_wallclock_sec` (server-side, round_log.csv)**: phản ánh full impact của straggler
+- **events.csv `update_received`**: KHÔNG có timing breakdown — chỉ ghi `num_samples`. Source of truth cho impact là `round_log.csv`
 
 ### 6.3 Server `straggler_delay` field trong run_meta
 
@@ -173,19 +189,20 @@ Kỳ vọng:
 - Client-0 train ~6s + submit ~7s → in window 15s
 - Client-1 train ~6s + sleep 20s = ~26s → MISS deadline
 - Server: round_timeout @15s → partial_aggregation với client-0 only
-- Client-1 sau khi sleep xong submit → server đã sang round 2, reject `stale_round` → **exit 3**
-- 3 round với `round_status=partial` server-side, nhưng client-1 chỉ submit được round 1 trước khi exit 3
+- Client-1 sau khi sleep xong submit → server đã sang round 2, reject `stale_round` → **exit 3** (round 1 expected behavior, không cần restart)
+- **3 round `round_status=partial` server-side phụ thuộc CLIENT-0 vẫn chạy đến DONE.** Client-1 exit ở round 1 không ảnh hưởng — Path B với 1 client là expected.
 - Accuracy curve: client-0 IID half data (~98-99%)
+- `round_wallclock_sec` ≈ 7 s + 8 s wait = 15s (= wait_timeout, vì timeout fire)
 
-**Lưu ý:** Sau round 1 client-1 exit, các round 2-3 server vẫn timeout 15s rồi partial với client-0 → 3 row `partial` đầy đủ.
+**Lưu ý:** Sau round 1 client-1 exit, các round 2-3 server vẫn timeout 15s rồi partial với client-0 → 3 row `partial` đầy đủ. KHÔNG cần restart client-1 — đây là test "drop straggler".
 
 ### 7.4 Scenario F1 — Crash + Reconnect (M7.6, cross-machine)
 
-**Setup:** dài hơi, manual Ctrl+C.
+**Setup:** num_rounds=12 (dư cửa sổ reconnect timing), manual Ctrl+C.
 
 ```powershell
-# Máy 1: server
-python server.py --bind 0.0.0.0:50051 --num-rounds 8 --wait-timeout 30 --min-clients 1 --run-id m7_f1_crash
+# Máy 1: server (12 round để có dư cửa sổ)
+python server.py --bind 0.0.0.0:50051 --num-rounds 12 --wait-timeout 30 --min-clients 1 --run-id m7_f1_crash
 
 # Máy 1: client-0
 python client.py --client-id client-0 --shard-id 0 --num-shards 2 --server-addr 127.0.0.1:50051
@@ -194,42 +211,42 @@ python client.py --client-id client-0 --shard-id 0 --num-shards 2 --server-addr 
 python client.py --client-id client-1 --shard-id 1 --num-shards 2 --server-addr 192.168.2.30:50051
 ```
 
-**Quy trình manual:**
+**Quy trình manual (targets, không phải pattern cứng):**
 
-| Time | Action |
-|---|---|
-| Round 1-4 | Cả 2 client chạy bình thường — verify `round_status=ok` cho 4 round |
-| **Sau round 4 done** | **Ctrl+C client-1 trên Máy 2** (simulate crash) |
-| Round 5-7 | Chỉ client-0 submit → server timeout 30s mỗi round → `round_status=partial` (3 round) |
-| **Trước round 8** | **Restart client-1 trên Máy 2** với cùng command |
-| Round 8 | Cả 2 client submit lại → `round_status=ok` |
+| Phase | Action | Target |
+|---|---|---|
+| **Phase 1 — Healthy** | Cả 2 client chạy bình thường | ≥ 3 round liên tiếp `ok` |
+| **Phase 2 — Crash** | **Ctrl+C client-1 trên Máy 2** sau khi thấy ≥ 3 round done | Catch client-1 BEFORE next round submit (cửa sổ ~vài giây giữa rounds) |
+| **Phase 3 — Degraded** | Chỉ client-0 submit | ≥ 2 round liên tiếp `partial` |
+| **Phase 4 — Recovery** | **Restart client-1 trên Máy 2** với cùng command | ≥ 1 round `ok` sau restart |
 
-Kỳ vọng round_log.csv 8 row:
-- Row 1-4: `round_status=ok`, num_clients_received=2
-- Row 5-7: `round_status=partial`, num_clients_received=1
-- Row 8: `round_status=ok`, num_clients_received=2
+**Acceptance flexible (không pattern cứng):**
 
-Events.csv:
-- 4× `round_done advancing_to_round=...` (rounds 1-4)
-- 3× `round_timeout` + `partial_aggregation` (rounds 5-7)
-- Khi client-1 restart: 1× `client_registered` lần 2 (hoặc đã có từ round 1, không re-log)
-- Round 8 normal
+- [ ] Có **đoạn liên tiếp** `round_status=ok` ở đầu (≥3 round)
+- [ ] Có **đoạn liên tiếp** `round_status=partial` ở giữa (≥2 round)
+- [ ] Có **ít nhất 1 round** `round_status=ok` sau restart
+- [ ] Server không stuck, set DONE sau round 12
+- [ ] events.csv ghi các transitions: `update_received` cho client-0 mọi round; `update_received` cho client-1 chỉ ở rounds healthy + recovery
+
+**Tại sao flexible:** Client loop tự động bắt round mới gần như ngay khi server chuyển TRAINING. "Kill sau round N done, trước round N+1 start" có cửa sổ ~1-2s polling interval — rất khó canh chính xác. Pattern lý tưởng (vd `4 ok + 4 partial + 4 ok`) chỉ là TARGET, không yêu cầu.
+
+**Nếu lệch:** rerun F1 hoặc tăng `num_rounds` lên 16/20 để có thêm cơ hội.
 
 **Phân tích cho Exp 4:**
-- Accuracy degradation khi 1 client crashed (round 5-7 acc thấp hơn dự kiến nếu 2 client?)
-- Recovery time round 8: sau khi client-1 reconnect, accuracy quay lại như trước crash?
+- Accuracy degradation khi 1 client crashed (so sánh acc của partial rounds vs ok rounds)
+- Recovery time: bao nhiêu round sau restart accuracy quay lại trước crash?
 
 ## 8. Acceptance criteria
 
 - [ ] M7.1+M7.2 syntax + import OK
 - [ ] `--straggler-delay 0` không phá Scenario A (backward compat)
-- [ ] `--straggler-delay < 0` → exit code 4 với error message
-- [ ] Config snapshot ghi đúng `straggler_delay` value khi user pass CLI
-- [ ] **Scenario S1:** 3 round `round_status=ok`, accuracy ~99%, wallclock tăng ~5s/round
-- [ ] **Scenario S2:** 3 round server `round_status=partial`; client-1 exit code 3 sau round 1
-- [ ] **Scenario F1:** 4 ok + 3 partial + 1 ok (round 1-8), events.csv ghi đủ transitions
-- [ ] Cross-machine F1 work: client-1 reconnect được sau Ctrl+C
-- [ ] Round wallclock impact của straggler được log rõ trong events.csv `update_received` timing
+- [ ] `--straggler-delay -1` → client `main()` validate + exit code 4 (argparse type=float không tự reject âm)
+- [ ] Config snapshot ghi đúng `straggler_delay` value khi user pass CLI (cả server lẫn client)
+- [ ] **Scenario S1:** 3 round `round_status=ok`, accuracy ~99%, **`round_wallclock_sec` tăng ~5s/round** so với baseline M4
+- [ ] **Scenario S2:** 3 round server `round_status=partial`; client-1 exit code 3 sau round 1 (expected, không cần restart). Client-0 hoàn thành đến DONE.
+- [ ] **Scenario F1:** flexible pattern — ≥3 ok đầu, ≥2 partial giữa, ≥1 ok sau restart (xem §7.4)
+- [ ] Cross-machine F1: client-1 reconnect được sau Ctrl+C
+- [ ] **Round wallclock impact của straggler đo qua `round_log.csv.round_wallclock_sec`** (KHÔNG qua events.csv — server không log timing breakdown)
 - [ ] M7 section trong milestone_report.md có data preview cho Exp 3 + Exp 4
 
 ## 9. Rủi ro & lưu ý

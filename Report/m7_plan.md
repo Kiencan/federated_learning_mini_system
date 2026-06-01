@@ -132,7 +132,7 @@ upload_ms = (time.perf_counter() - t_ul) * 1000  # bao gồm straggler delay
 - **`round_wallclock_sec` (server-side, round_log.csv)**: phản ánh full impact của straggler từ góc server (timeout-driven hoặc wait-for-all)
 - **events.csv `update_received`**: KHÔNG có timing breakdown — chỉ ghi `num_samples`. Source of truth cho impact là `round_log.csv`
 
-### 6.3 Server `straggler_delay` field trong run_meta
+### 6.4 Server `straggler_delay` field trong run_meta
 
 Khi server nhận update có client với `straggler_delay > 0`, có thể log vào events.csv. Nhưng client không gửi giá trị này — chỉ chính delay nó. Không cần thêm logic server. **Skip.**
 
@@ -161,7 +161,9 @@ Kỳ vọng:
 **Setup:** wait_timeout RỘNG, đủ chỗ cho straggler đến deadline.
 
 ```powershell
-python server.py --num-rounds 3 --wait-timeout 60 --min-clients 2 --run-id m7_s1_no_timeout
+# Server: pass --straggler-delay 5 để snapshot config phản ánh scenario
+# (server không dùng giá trị này runtime)
+python server.py --num-rounds 3 --wait-timeout 60 --min-clients 2 --straggler-delay 5 --run-id m7_s1_no_timeout
 
 python client.py --client-id client-0 --shard-id 0 --num-shards 2 --server-addr 127.0.0.1:50051
 
@@ -179,7 +181,8 @@ Kỳ vọng:
 **Setup:** wait_timeout NGẮN hơn straggler delay → server timeout, partial aggregate, straggler reject sau.
 
 ```powershell
-python server.py --num-rounds 3 --wait-timeout 15 --min-clients 1 --run-id m7_s2_timeout_drop
+# Server: pass --straggler-delay 20 để snapshot config phản ánh scenario
+python server.py --num-rounds 3 --wait-timeout 15 --min-clients 1 --straggler-delay 20 --run-id m7_s2_timeout_drop
 
 python client.py --client-id client-0 --shard-id 0 --num-shards 2 --server-addr 127.0.0.1:50051
 

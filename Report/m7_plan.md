@@ -245,7 +245,7 @@ python client.py --client-id client-1 --shard-id 1 --num-shards 2 --server-addr 
 - [ ] M7.1+M7.2 syntax + import OK
 - [ ] `--straggler-delay 0` không phá Scenario A (backward compat)
 - [ ] `--straggler-delay -1` → client `main()` validate + exit code 4 (argparse type=float không tự reject âm)
-- [ ] **Server config snapshot** ghi đúng `straggler_delay` khi server được chạy với `--straggler-delay` CLI. (Client KHÔNG tạo `run_dir` riêng — không có snapshot client-side. Khuyến nghị: cả 3 commands S1/S2/F1 pass `--straggler-delay` cho **server** để snapshot phản ánh scenario, dù server không dùng giá trị này runtime.)
+- [ ] **Server config snapshot** ghi đúng `straggler_delay` khi server được chạy với `--straggler-delay` CLI. (Client KHÔNG tạo `run_dir` riêng — không có snapshot client-side.) **Khuyến nghị:** S1/S2 pass `--straggler-delay` cho server để snapshot phản ánh scenario; F1 có thể để default 0 (không phải straggler scenario).
 - [ ] **Scenario S1:** 3 round `round_status=ok`, accuracy ~99%, **`round_wallclock_sec` tăng ~5s/round** so với baseline M4
 - [ ] **Scenario S2:** 3 round server `round_status=partial`; client-1 exit code 3 sau round 1 (expected, không cần restart). Client-0 hoàn thành đến DONE.
 - [ ] **Scenario F1:** flexible pattern — ≥3 ok đầu, ≥2 partial giữa, ≥1 ok sau restart (xem §7.4)

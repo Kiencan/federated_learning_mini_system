@@ -66,7 +66,7 @@ CLI override (đã có pattern `--data-split`). Validation: `straggler_delay >= 
 | M7.3 | Smoke verify: `--straggler-delay 0` không break Scenario A; `--straggler-delay 5` localhost work | (run) | **Máy 1** | — (sau push) | 10 min |
 | M7.4 | Scenario S1 localhost (no effective timeout): server `--wait-timeout 60`, client-1 delay 5s | (run) | **Máy 1** | — | 10 min |
 | M7.5 | Scenario S2 localhost (timeout fires): server `--wait-timeout 15`, client-1 delay 20s → expect partial + reject | (run) | **Máy 1** | — | 10 min |
-| M7.6 | Scenario F1 cross-machine (crash + reconnect): 8 round, Ctrl+C Máy 2 sau round 4, restart sau round 7 | (run) | **Cả 2** | — | 20 min |
+| M7.6 | Scenario F1 cross-machine (crash + reconnect): **12 round**, manual Ctrl+C/restart Máy 2; **target flexible** ≥3 ok đầu + ≥2 partial giữa + ≥1 ok recovery | (run) | **Cả 2** | — | 20 min |
 | M7.7 | Update `Report/milestone_report.md` với M7 section + Exp 3/4 data preview | report | **Máy 1** | direct commit dev | 20 min |
 
 **Tổng ước tính:** ~1.5 giờ (scope hẹp nhất).
@@ -127,8 +127,9 @@ upload_ms = (time.perf_counter() - t_ul) * 1000  # bao gồm straggler delay
 
 ### 6.3 Hệ quả timing measurement
 
-- **`upload_ms` (client-side)**: bao gồm `straggler_delay` + `serialize_state_dict` time + thật sự network upload + server response wait
-- **`round_wallclock_sec` (server-side, round_log.csv)**: phản ánh full impact của straggler
+- **`upload_ms` (client-side)**: bao gồm `straggler_delay` + `serialize_state_dict` (gọi inside `ClientUpdate(...)` constructor sau `t_ul`) + network upload + server response wait.
+  - **Quan trọng khi implement:** giữ `serialize_state_dict(model)` **bên trong** `ClientUpdate(...)` constructor sau `t_ul = perf_counter()`. Nếu refactor để serialize trước `t_ul`, breakdown này không còn đúng.
+- **`round_wallclock_sec` (server-side, round_log.csv)**: phản ánh full impact của straggler từ góc server (timeout-driven hoặc wait-for-all)
 - **events.csv `update_received`**: KHÔNG có timing breakdown — chỉ ghi `num_samples`. Source of truth cho impact là `round_log.csv`
 
 ### 6.3 Server `straggler_delay` field trong run_meta
@@ -241,7 +242,7 @@ python client.py --client-id client-1 --shard-id 1 --num-shards 2 --server-addr 
 - [ ] M7.1+M7.2 syntax + import OK
 - [ ] `--straggler-delay 0` không phá Scenario A (backward compat)
 - [ ] `--straggler-delay -1` → client `main()` validate + exit code 4 (argparse type=float không tự reject âm)
-- [ ] Config snapshot ghi đúng `straggler_delay` value khi user pass CLI (cả server lẫn client)
+- [ ] **Server config snapshot** ghi đúng `straggler_delay` khi server được chạy với `--straggler-delay` CLI. (Client KHÔNG tạo `run_dir` riêng — không có snapshot client-side. Khuyến nghị: cả 3 commands S1/S2/F1 pass `--straggler-delay` cho **server** để snapshot phản ánh scenario, dù server không dùng giá trị này runtime.)
 - [ ] **Scenario S1:** 3 round `round_status=ok`, accuracy ~99%, **`round_wallclock_sec` tăng ~5s/round** so với baseline M4
 - [ ] **Scenario S2:** 3 round server `round_status=partial`; client-1 exit code 3 sau round 1 (expected, không cần restart). Client-0 hoàn thành đến DONE.
 - [ ] **Scenario F1:** flexible pattern — ≥3 ok đầu, ≥2 partial giữa, ≥1 ok sau restart (xem §7.4)
@@ -253,13 +254,13 @@ python client.py --client-id client-1 --shard-id 1 --num-shards 2 --server-addr 
 
 1. **Backward compat:** `straggler_delay` default 0 → no-op. Tất cả test M3-M6 vẫn pass.
 
-2. **Crash test phụ thuộc thao tác user:** Máy 2 user phải Ctrl+C đúng thời điểm (sau round 4 done, trước round 5 start). Có thể quan sát qua client-1 console — khi nó in `>>> round 5/8 bat dau` thì có thể vẫn ổn để kill (nhưng straggler sẽ miss round 5).
+2. **Crash test phụ thuộc thao tác user:** Máy 2 user phải Ctrl+C đúng thời điểm — **sau khi thấy ≥3 round ok**, ngay trong cửa sổ giữa 2 round (sau client-1 in `<<< round N done`, trước `>>> round N+1 bat dau`). Window ~1-2s polling interval, hẹp.
 
-   **Recommendation:** kill sau khi client-1 in `<<< round 4 done` và TRƯỚC khi nó in `>>> round 5/8 bat dau`. Window ~2-3s polling interval.
+   **Recommendation:** đợi client-1 in `<<< round N done` rồi Ctrl+C ngay. Nếu trễ, client-1 đã pull/train round N+1 → kill giữa training → khi server timeout vẫn skip → 1 round mất nhưng kết quả vẫn quy về Phase 3 partial.
 
-3. **Reconnect timing:** Restart client-1 phải làm KHI server đang TRAINING round mới (sau round 7 done, trước round 8 timeout). Nếu khởi động chậm, client-1 sẽ join round 9+ hoặc lỡ hoàn toàn.
+3. **Reconnect timing:** Restart client-1 phải khi server **còn đủ round phía sau** (≥1 round) và đang TRAINING. Nếu khởi động chậm hoặc dồn đến cuối, client-1 có thể chỉ join 1 round recovery hoặc không kịp.
 
-   **Mitigation:** wait_timeout 30s đủ rộng. Nếu thất bại, retry F1 với num_rounds = 10+ để có thêm cơ hội.
+   **Mitigation:** `num_rounds=12` cho dư cửa sổ. Nếu thất bại (vd không có round ok nào sau restart), **rerun F1 với `num_rounds=16` hoặc `20`** để có thêm cơ hội.
 
 4. **`time.sleep()` block thread:** Client đang sleep không phản hồi gì. Nếu Ctrl+C trong khi sleep, exception propagates → client exit. Acceptable.
 

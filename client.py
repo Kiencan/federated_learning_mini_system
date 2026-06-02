@@ -186,6 +186,18 @@ def do_one_round(
 
     # Buoc 4: Submit update
     t_ul = time.perf_counter()
+
+    # M7: straggler injection — sleep INSIDE upload measurement so
+    # round_log.csv.round_wallclock_sec captures delay as source of truth.
+    # serialize_state_dict(model) stays inside ClientUpdate(...) below.
+    straggler_delay = cfg.get("straggler_delay", 0) or 0
+    if straggler_delay > 0:
+        print(
+            f"[client {client_id}] round={round_id} straggler sleep "
+            f"{straggler_delay:.1f}s before SubmitUpdate ..."
+        )
+        time.sleep(straggler_delay)
+
     try:
         ack = stub.SubmitUpdate(
             federated_pb2.ClientUpdate(
@@ -449,6 +461,15 @@ def main() -> None:
     cfg = load_config(args.config, overrides=cli_overrides(args))
     set_seed(cfg["seed"])
     server_addr = args.server_addr or cfg["server_addr"]
+
+    # M7: validate straggler_delay (resolved from CLI or config.yaml)
+    straggler_delay = cfg.get("straggler_delay", 0) or 0
+    if straggler_delay < 0:
+        print(
+            f"[client {args.client_id}] ERROR: straggler_delay must be >= 0, "
+            f"got {straggler_delay}"
+        )
+        sys.exit(4)
 
     if args.poll is not None:
         run_poll_only(args, cfg, server_addr)

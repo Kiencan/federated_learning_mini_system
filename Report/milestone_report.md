@@ -857,20 +857,204 @@ Branch xóa khỏi remote + local sau merge.
 
 ---
 
-## Bước tiếp theo (M7)
+## Milestone 7 — Straggler injection (M7.1–M7.5 hoàn thành; M7.6 đang chờ)
 
-**Straggler + Fault tolerance experiments** — KHÔNG thêm code mới, chỉ thêm test scenarios:
+**Mục tiêu:** thêm flag `--straggler-delay N` (client-side) để inject artificial sleep INSIDE upload measurement window, tận dụng infrastructure timeout/partial của M6 để chạy 2 thí nghiệm: Straggler (Exp 3) + Crash/Reconnect (Exp 4). **Milestone hẹp nhất** kể từ M3 — code change ~31 dòng.
 
-1. **Straggler simulation**: thêm flag `--straggler-delay N` cho client (sleep N giây trước khi submit). Verify server handle với (a) timeout=15s, straggler=5s → all good; (b) timeout=15s, straggler=20s → partial aggregate, drop straggler
-2. **Fault tolerance**:
-   - Run 5 round, kill client-2 ở round 3 → verify server tiếp tục với 1 client (Path B)
-   - Restart client-2 ở round 5 → verify reconnect và tham gia tiếp
-3. Acceptance: log đủ `round_timeout`/`partial_aggregation`/`round_skipped` events tương ứng
+### M7.0 — Plan + review (`Report/m7_plan.md`)
 
-Sau M7, **toàn bộ implementation done** → chuyển sang phase **Experiments**:
-- Exp 1: Centralized vs Federated (đã có M1 baseline + M4.4 IID baseline)
+Plan trải qua **6 vòng review iteration** (22 fixes tổng cộng) trước khi implement. Các thay đổi quan trọng từ review:
+
+- Sleep đặt **AFTER `t_ul = perf_counter()`** và TRƯỚC `stub.SubmitUpdate(...)` → counted INSIDE upload phase
+- Single source of truth = `round_log.csv.round_wallclock_sec` (server wallclock), không phải `upload_ms` (client metric, dễ bị clock skew)
+- Acceptance F1 dùng **flexible pattern** thay vì cứng (≥3 ok + ≥2 partial + ≥1 ok) vì client polling interval (2s) khó canh chính xác Ctrl+C
+- Khuyến nghị S1/S2 server cũng pass `--straggler-delay` để snapshot phản ánh scenario; F1 default 0 (không phải straggler scenario)
+
+### M7.1 — Shared CLI flag (`run_context.py` +10 dòng)
+
+```python
+p.add_argument(
+    "--straggler-delay",
+    type=float,
+    default=None,
+    help="M7: client-side artificial delay (seconds) injected before "
+         "SubmitUpdate to simulate straggler. Counted inside upload_ms. "
+         "Client-side; overrides config.yaml straggler_delay. "
+         "Server snapshot reflects scenario (recommend pass on S1/S2 server too).",
+)
+```
+
+Map vào `cli_overrides()` để cả server và client cùng nhận từ một parser (consistency với pattern `--data-split`, `--min-clients`, `--wait-timeout`).
+
+### M7.2 — Sleep injection (`client.py` +21 dòng)
+
+**`main()` validation** (trước khi mở gRPC channel — fail fast):
+
+```python
+straggler_delay = cfg.get("straggler_delay", 0) or 0
+if straggler_delay < 0:
+    print(f"[client {args.client_id}] ERROR: straggler_delay must be >= 0, got {straggler_delay}")
+    sys.exit(4)
+```
+
+**`do_one_round()` sleep injection**:
+
+```python
+# Buoc 4: Submit update
+t_ul = time.perf_counter()
+
+# M7: straggler injection — sleep INSIDE upload measurement so
+# round_log.csv.round_wallclock_sec captures delay as source of truth.
+straggler_delay = cfg.get("straggler_delay", 0) or 0
+if straggler_delay > 0:
+    print(f"[client {client_id}] round={round_id} straggler sleep {straggler_delay:.1f}s before SubmitUpdate ...")
+    time.sleep(straggler_delay)
+
+try:
+    ack = stub.SubmitUpdate(federated_pb2.ClientUpdate(
+        client_id=client_id,
+        round_id=round_id,
+        serialized_state_dict=serialize_state_dict(model),  # vẫn ở đây — không đổi flow cũ
+        ...
+    ), timeout=120)
+...
+upload_ms = (time.perf_counter() - t_ul) * 1000
+```
+
+3 invariants từ review:
+1. **Shared CLI wiring** correct (`build_cli_parser` + `cli_overrides` map cả 2 chiều)
+2. **Negative validation** client-side, fail fast trước channel open
+3. **Sleep INSIDE upload window** → `upload_ms` phản ánh delay, server `round_wallclock_sec` phản ánh full round latency
+
+### M7.3 — Backward compat smoke (run_id `m7_smoke_compat`)
+
+| Check | Result |
+|---|---|
+| `python client.py --help` shows flag | ✅ `--straggler-delay STRAGGLER_DELAY` |
+| Negative `--straggler-delay -1` → exit code 4 | ✅ `EXIT=4` với error message |
+| Parser type float | ✅ `5.0 float` (via introspection) |
+| 1-round FL với `--straggler-delay 0` (cả 2 clients) | ✅ `round_status=ok`, acc=98.52%, `upload_ms` 33-46ms (no inflation) |
+| Snapshot ghi `straggler_delay: 0` | ✅ |
+| No "straggler sleep" print khi delay=0 (guard works) | ✅ |
+
+### M7.4 — Scenario S1 localhost (`m74_s1_localhost`)
+
+**Command (per plan §7.2):**
+
+```powershell
+python server.py --num-rounds 3 --min-clients 2 --wait-timeout 60 --straggler-delay 5 --run-id m74_s1_localhost
+python client.py --client-id client-0 --shard-id 0 --straggler-delay 5
+python client.py --client-id client-1 --shard-id 1 --straggler-delay 5
+```
+
+**Kết quả 3/3 rounds Path A "ok":**
+
+| Round | Status | Received | Accuracy | `round_wallclock_sec` |
+|---|---|---|---|---|
+| 1 | `ok` | 2 | 98.52% | 28.46s |
+| 2 | `ok` | 2 | 99.02% | 14.86s |
+| 3 | `ok` | 2 | 99.17% | 15.08s |
+
+- ✅ Round 2-3 wallclock ≈ 15s = train 8s + **sleep 5s** + aggregation <1s + eval ~1s → confirm sleep counted inside server round latency.
+- ✅ Round 1 wallclock 28.46s do client cold start (Python + torch + MNIST + GPU init); subsequent rounds reflect steady state.
+- ✅ Acc 99.17% ≥ 97% target, accuracy curve giống M4 baseline → straggler delay không degrade FedAvg.
+- ✅ Snapshot: `straggler_delay: 5.0`, `wait_timeout: 60.0`, `min_clients: 2`.
+- ✅ Events.csv: KHÔNG có `round_timeout`/`partial_aggregation`/`round_skipped`/`commit_aborted`.
+
+### M7.5 — Scenario S2 localhost (`m75_s2_v3`)
+
+**Command (adjusted from plan §7.3 — see Empirical adjustment below):**
+
+```powershell
+python server.py --num-rounds 3 --wait-timeout 20 --min-clients 1 --straggler-delay 20 --run-id m75_s2_v3
+python client.py --client-id client-0 --shard-id 0                              # NO delay
+python client.py --client-id client-1 --shard-id 1 --straggler-delay 20         # ONLY client-1 delayed
+```
+
+**Kết quả 3/3 rounds Path B "partial":**
+
+| Round | Status | Received | Accuracy | `round_wallclock_sec` |
+|---|---|---|---|---|
+| 1 | `partial` | 1 (client-0) | 98.31% | 21.07s |
+| 2 | `partial` | 1 (client-0) | 98.78% | 21.03s |
+| 3 | `partial` | 1 (client-0) | 98.85% | 20.98s |
+
+**Events trace round 1 (sample):**
+```
+09:39:42 client_registered (both)
+09:39:42 model_pulled (both)
+09:39:50 update_received client-0          # train 8s, no delay
+09:39:55 round_timeout received=1/2        # wait_timeout=20s elapsed
+09:39:55 partial_aggregation received=1/2  # received >= min_clients -> Path B
+09:39:56 aggregation_done duration_ms=3.3
+09:39:56 evaluation_done accuracy=0.9831
+09:40:10 update_rejected client-1 "stale_round (got 1, expected 2)"  # client-1 woke from sleep, server at round 2
+```
+
+- ✅ `round_wallclock_sec ≈ 21s = wait_timeout 20s + aggregation ~1s` (timeout fired vì client-1 không kịp).
+- ✅ Client-0 IID half data → acc 98-99% as plan predicted (giảm nhẹ so với S1 99% — single-client aggregation thiếu averaging benefit).
+- ✅ Client-1 **exit code 3** sau khi wake từ sleep 20s, gửi update round=1 → server đã ở round 2 → reject stale_round → exit 3 (per m4_plan §6, không retry — đây là "drop straggler" expected behavior, không cần restart).
+- ✅ Rounds 2-3 chỉ còn client-0 → server vẫn timeout 20s rồi partial aggregate → 3 row `partial` đầy đủ.
+- ✅ Snapshot: `wait_timeout: 20.0`, `min_clients: 1`, `straggler_delay: 20.0`.
+
+#### Empirical adjustment: `wait_timeout` 15 → 20
+
+Plan §7.3 chỉ định `--wait-timeout 15`. Thực tế trên Máy 1 (Windows + miniconda fedml env):
+
+| Phase | Time |
+|---|---|
+| Python interpreter startup | ~1s |
+| `import torch` + CUDA init | ~5s |
+| MNIST load + DataLoader setup | ~1s |
+| gRPC connect + GetGlobalModel | ~1s |
+| Local train (2 epochs, 30k samples) | ~8s |
+| **Total before SubmitUpdate (no delay)** | **~16s** |
+
+Với `wait_timeout=15` và `round_start_time` refresh xảy ra ngay sau `server.start()` (~2s sau server boot), client-0 không kịp submit trước deadline → cả 2 round skipped. Bump 15→20 cho client-0 đủ thời gian (~16s < 20s) trong khi client-1 vẫn miss (8s train + 20s sleep = 28s > 20s) → vẫn demo Path B intended.
+
+**Forensic data:** 2 lần chạy failed trước adjustment (`m75_s2_localhost`, `m75_s2_v2`) đều cho 3 rounds `skipped` với `received=0/2` ở `09:38:00` — confirm timing model. Files giữ lại trong `results/exp_federated_iid_smoke/` cho audit.
+
+**Future fix nếu cần `wait_timeout=15`:** Thay đổi server logic refresh `round_start_time` khi **first client_registered** thay vì sau `server.start()`. Nằm ngoài M7 scope (M6 infrastructure change), TODO sau Experiments.
+
+### Files M7 changes
+
+| File | LOC | Purpose |
+|---|---|---|
+| `run_context.py` | +10 | `--straggler-delay` flag + cli_overrides map |
+| `client.py` | +21 | main() validation + do_one_round() sleep injection |
+| `Report/m7_plan.md` | (mới, 6 commits) | Plan + 6 vòng review iteration |
+| `Report/milestone_report.md` | (section này) | M7.0–M7.5 documentation |
+
+### Git state cuối M7.5
+
+```
+deeabe8 (HEAD -> dev, origin/dev, origin/main)  Merge PR#5 feature/m7-straggler into main
+41b85d0                                          feat(m7): add --straggler-delay flag + client-side sleep injection
+a8c969e                                          docs(m7): wording acceptance — S1/S2 pass --straggler-delay; F1 default 0
+... (5 docs commits earlier — plan iteration)
+```
+
+PR#5 merge vào main; sau đó dev fast-forward sync với main → tip thống nhất.
+
+### Open issues (M7)
+
+- **N5 (M7.5)**: `wait_timeout=15` empirical không đủ trên Máy 1 (Python startup ~8s). Đã document workaround (bump 20) + propose future server fix.
+- **N6 (M7 general)**: Server `--help` crash do cp1252 encode Vietnamese (B1 pre-existing nhưng client.py đã fix, server.py chưa). Không ảnh hưởng functional, chỉ ảnh hưởng UX khi user gọi `python server.py --help` trên Windows.
+
+---
+
+## Bước tiếp theo (M7.6 + Experiments)
+
+**M7.6 — Scenario F1 Crash/Reconnect (cross-machine với Máy 2)**
+
+- 12 round, manual Ctrl+C client-1 ở Máy 2 giữa run, sau đó restart
+- Acceptance flexible: ≥3 round ok đầu, ≥2 round partial giữa, ≥1 round ok sau restart, server set DONE sau round 12
+- Cần Máy 2 sẵn sàng + coordination timing — sẽ thực hiện khi user signal
+
+**Sau M7.6, toàn bộ implementation done** → chuyển sang phase **Experiments**:
+- Exp 1: Centralized vs Federated (đã có M1 + M4.4 baseline)
 - Exp 2: IID vs Non-IID (đã có M4.4 + M5.4 baseline)
-- Exp 3: Straggler (cần M7 data)
-- Exp 4: Fault tolerance (cần M7 data)
+- Exp 3: Straggler (data có rồi từ M7.4 + M7.5; cần analyze + plot)
+- Exp 4: Fault tolerance (cần M7.6 data)
 
-Cuối cùng: **Báo cáo cuối kỳ** với 4 experiments + phân tích 5 vấn đề distributed systems của ytuong.md §7.
+Cuối cùng: **Báo cáo cuối kỳ** với 4 experiments + phân tích 5 vấn đề distributed systems của `ytuong.md` §7.

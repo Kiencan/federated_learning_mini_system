@@ -147,6 +147,29 @@ def build_cli_parser(description: str) -> argparse.ArgumentParser:
         help="data partition mode (override config.yaml data_split). "
              "Server: chỉ snapshot vào config; Client: dispatch partition function.",
     )
+    p.add_argument(
+        "--min-clients",
+        type=int,
+        default=None,
+        help="M6: minimum clients to aggregate (1 = fault tolerant). "
+             "Server-side; overrides config.yaml min_clients.",
+    )
+    p.add_argument(
+        "--wait-timeout",
+        type=float,
+        default=None,
+        help="M6: max seconds server chờ clients trong 1 round trước khi "
+             "fallback aggregation. Server-side; overrides config.yaml wait_timeout.",
+    )
+    p.add_argument(
+        "--straggler-delay",
+        type=float,
+        default=None,
+        help="M7: client-side artificial delay (seconds) injected before "
+             "SubmitUpdate to simulate straggler. Counted inside upload_ms. "
+             "Client-side; overrides config.yaml straggler_delay. "
+             "Server snapshot reflects scenario (recommend pass on S1/S2 server too).",
+    )
     return p
 
 
@@ -162,5 +185,8 @@ def cli_overrides(args: argparse.Namespace) -> dict[str, Any]:
         "experiment_name": args.experiment_name,
         "run_id": args.run_id,
         "data_split": args.data_split,
+        "min_clients": args.min_clients,
+        "wait_timeout": args.wait_timeout,
+        "straggler_delay": args.straggler_delay,
     }
     return {k: v for k, v in mapping.items() if v is not None}

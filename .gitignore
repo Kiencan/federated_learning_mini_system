@@ -30,6 +30,11 @@ ENV/
 .DS_Store
 Thumbs.db
 
+# MS Office temp/lock files
+~$*.docx
+~$*.xlsx
+~$*.pptx
+
 # Data (downloaded MNIST, etc.) — chỉ root-level, KHÔNG ignore Report/data/ (tracked CSV inputs)
 /data/
 

@@ -6,7 +6,6 @@ Hệ thống Federated Learning hai node với giao tiếp gRPC trên MNIST + CN
 
 - [Report/bao_cao_cuoi_ky.md](Report/bao_cao_cuoi_ky.md) · [bản DOCX](Report/bao_cao_cuoi_ky.docx)
 - Chi tiết milestone: [Report/milestone_report.md](Report/milestone_report.md)
-- Spec gốc: [ytuong.md](ytuong.md) · Kế hoạch: [plan.md](plan.md)
 
 ## Setup môi trường
 

@@ -16,7 +16,8 @@ Tài liệu này theo dõi kết quả thực hiện từng milestone của dự
 | M4 | Chạy 5 round IID + log CSV | ✅ Done | `38c66fe` |
 | M5 | Thêm Non-IID partition | ✅ Done | `5857aa9` → `c0dd3a9` |
 | M6 | WAIT_TIMEOUT + dynamic min_clients (fault tolerance) | ✅ Done | `370b4af` |
-| M7 | Straggler + failure experiments | ⏳ Pending | — |
+| M7 | Straggler injection + crash/reconnect | ✅ Done | `374879d` |
+| Experiments | 4 thí nghiệm + analyze + báo cáo cuối kỳ | ✅ Done | `f89a1a0` |
 
 **Hardware đang dùng:**
 - Máy 1: Windows, NVIDIA RTX 2000 Ada Generation, CUDA 12.1, LAN IP `192.168.2.30`
@@ -1125,13 +1126,42 @@ Toàn bộ M7.0–M7.6 documented. `Report/m7_plan.md` (plan + 6 vòng review) +
 
 ---
 
-## Bước tiếp theo — Phase Experiments
+## Phase Experiments — Hoàn thành
 
-Toàn bộ implementation M1-M7 done. Data đã sẵn cho cả 4 experiments:
+Toàn bộ implementation M1-M7 done → phase cuối: chạy baseline đồng bộ, phân tích, vẽ biểu đồ, viết báo cáo cuối kỳ. Kế hoạch chi tiết: [experiments_plan.md](experiments_plan.md).
 
-- **Exp 1 — Centralized vs Federated**: M1 baseline (centralized) + M4.4 (federated IID) → so sánh accuracy/round, convergence
-- **Exp 2 — IID vs Non-IID**: M4.4 (IID) + M5.4 (Non-IID pathological) → impact của data heterogeneity lên FedAvg
-- **Exp 3 — Straggler**: M7.4 S1 (`round_wallclock` +5s/round, vẫn ok) + M7.5 S2 (timeout drop, partial) → straggler impact lên round latency vs accuracy
-- **Exp 4 — Fault tolerance**: M7.6 F1 (4-phase crash/recovery) → accuracy degradation khi 1 client crashed + recovery time
+### E0 — Baseline đồng bộ 20 round (localhost)
 
-Còn lại: **analyze + plot** từ data có sẵn (round_log.csv của các run), rồi viết **báo cáo cuối kỳ** với 4 experiments + phân tích 5 vấn đề distributed systems của `ytuong.md` §7.
+Chạy lại 3 baseline với hyperparams đồng nhất (`local_epochs=2, batch=32, lr=0.01, seed=42`) để có accuracy/convergence curves sạch:
+
+| Run | Setup | Kết quả |
+|---|---|---|
+| `exp_centralized/baseline_20ep` | Centralized 20 epoch | acc 99.29% |
+| `exp_federated_iid/baseline_20r` | Fed IID 20 round, min_clients=2 | 20/20 `ok`, acc 99.38% |
+| `exp_federated_noniid/baseline_20r` | Fed Non-IID 20 round | 20/20 `ok`, acc 98.33%, round 1 chỉ 92.17% |
+
+### E1 — `analyze.py` + 4 biểu đồ
+
+Script đọc `round_log.csv` (xử lý 3 schema: centralized, fed M4, fed M6+), sinh 4 plots vào `Report/figures/` + bảng metrics. Đọc CSV inputs từ `Report/data/` (tracked, reproducible từ clean checkout; `--data-root` override).
+
+- `accuracy_per_round.png` — Fed IID vs Non-IID vs Centralized
+- `round_time_breakdown.png` — coarse (agg+eval+other), steady-state từ `m44_cross`
+- `communication_overhead.png` — 6.44 MiB/round cumulative
+- `per_class_accuracy_iid_vs_noniid.png` — lệch per-class round cuối
+
+### Kết quả 4 experiments
+
+| Exp | §7 | Kết quả chính |
+|---|---|---|
+| 1. Centralized vs Federated | — | Fed IID 99.38% ≈ Centralized 99.29% — phân tán không giảm accuracy với IID |
+| 2. IID vs Non-IID | §7.5 | Non-IID hội tụ chậm (`avg_first5` 96.04% vs 99.06%), lệch per-class class 3 (95%) + class 9 (96.3%) |
+| 3. Straggler | §7.3 | S1 chờ (round +5s, `ok`) vs S2 drop straggler (timeout, `partial`, acc giảm) |
+| 4. Fault tolerance | §7.4 | F1 4-phase crash/recovery, server không sập, acc đỉnh 99.41% |
+| Communication | §7.1 | 6.44 MiB/round; round time chi phối bởi client compute+comm, aggregation ~2ms |
+
+### E2/E3 — Báo cáo cuối kỳ
+
+- [bao_cao_cuoi_ky.md](bao_cao_cuoi_ky.md) + [bản DOCX](bao_cao_cuoi_ky.docx) — 9 sections, 4 biểu đồ nhúng, phân tích đủ 5 vấn đề distributed systems (§7.1–7.5).
+- `generate_docx.js` sinh bản DOCX từ figures.
+
+**Dự án hoàn thành 100%** — M1–M7 + Experiments + báo cáo cuối kỳ.

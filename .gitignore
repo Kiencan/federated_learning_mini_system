@@ -30,8 +30,8 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# Data (downloaded MNIST, etc.)
-data/
+# Data (downloaded MNIST, etc.) — chỉ root-level, KHÔNG ignore Report/data/ (tracked CSV inputs)
+/data/
 
 # Results (run outputs — keep folder via .gitkeep)
 results/*

@@ -18,6 +18,7 @@ Phân vai trò data (per experiments_plan.md):
 """
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -38,17 +39,20 @@ import pandas as pd
 REPO = Path(__file__).resolve().parent
 FIG_DIR = REPO / "Report" / "figures"
 
+# Mặc định đọc CSV inputs đã commit vào Report/data/ (tracked, reproducible từ
+# clean checkout). Override bằng --data-root results/ để chạy trên run outputs gốc.
+DEFAULT_DATA_ROOT = REPO / "Report" / "data"
+
 MODEL_SIZE_BYTES = 1_689_280  # state_dict serialized, đo từ events.csv
 NUM_CLIENTS = 2
 MIB = 1024 * 1024
 
-# Accuracy/convergence — E0 baseline localhost
-CENTRALIZED = REPO / "results" / "exp_centralized" / "baseline_20ep"
-FED_IID = REPO / "results" / "exp_federated_iid" / "baseline_20r"
-FED_NONIID = REPO / "results" / "exp_federated_noniid" / "baseline_20r"
-
+# Đường dẫn tương đối dưới data_root (giữ cấu trúc results/ gốc)
+REL_CENTRALIZED = Path("exp_centralized") / "baseline_20ep"
+REL_FED_IID = Path("exp_federated_iid") / "baseline_20r"
+REL_FED_NONIID = Path("exp_federated_noniid") / "baseline_20r"
 # Timing breakdown — cross-machine "normal federated" (KHÔNG dùng fault run)
-TIMING_IID = REPO / "results" / "exp_federated_iid_smoke" / "m44_cross"
+REL_TIMING_IID = Path("exp_federated_iid_smoke") / "m44_cross"
 
 ACC_CLASS_COLS = [f"acc_class_{i}" for i in range(10)]
 
@@ -253,13 +257,25 @@ def print_metrics_table(cen, iid, noniid, num_rounds: int) -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Phase Experiments — sinh plots + metrics")
+    parser.add_argument(
+        "--data-root",
+        type=Path,
+        default=DEFAULT_DATA_ROOT,
+        help="thư mục chứa round_log.csv inputs (mặc định Report/data — tracked. "
+             "Dùng --data-root results để chạy trên run outputs gốc).",
+    )
+    args = parser.parse_args()
+    data_root = args.data_root
+
     FIG_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"[analyze] data_root = {data_root}")
     print(f"[analyze] figures → {FIG_DIR}")
 
-    cen = load_round_log(CENTRALIZED)
-    iid = load_round_log(FED_IID)
-    noniid = load_round_log(FED_NONIID)
-    timing = load_round_log(TIMING_IID)
+    cen = load_round_log(data_root / REL_CENTRALIZED)
+    iid = load_round_log(data_root / REL_FED_IID)
+    noniid = load_round_log(data_root / REL_FED_NONIID)
+    timing = load_round_log(data_root / REL_TIMING_IID)
     num_rounds = int(iid["round_id"].max())
 
     print("[analyze] sinh plots:")

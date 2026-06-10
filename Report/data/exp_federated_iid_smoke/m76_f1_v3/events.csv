@@ -1,0 +1,132 @@
+timestamp,round_id,event,client_id,message,num_samples
+2026-06-10T13:20:47,1,client_registered,client-0,,
+2026-06-10T13:20:47,1,model_pulled,client-0,bytes=1689280 state=TRAINING,
+2026-06-10T13:20:55,1,update_received,client-0,,30000
+2026-06-10T13:21:16,1,round_timeout,,received=1/2,
+2026-06-10T13:21:16,1,partial_aggregation,,received=1/2,
+2026-06-10T13:21:16,1,aggregation_start,,clients=1,
+2026-06-10T13:21:17,1,aggregation_done,,duration_ms=3.5,
+2026-06-10T13:21:17,1,evaluation_done,,accuracy=0.9831,
+2026-06-10T13:21:17,2,round_done,,advancing_to_round=2,
+2026-06-10T13:21:17,2,model_pulled,client-0,bytes=1689280 state=TRAINING,
+2026-06-10T13:21:25,2,update_received,client-0,,30000
+2026-06-10T13:22:02,2,round_timeout,,received=1/2,
+2026-06-10T13:22:02,2,partial_aggregation,,received=1/2,
+2026-06-10T13:22:02,2,aggregation_start,,clients=1,
+2026-06-10T13:22:03,2,aggregation_done,,duration_ms=0.7,
+2026-06-10T13:22:03,2,evaluation_done,,accuracy=0.9878,
+2026-06-10T13:22:03,3,round_done,,advancing_to_round=3,
+2026-06-10T13:22:05,3,model_pulled,client-0,bytes=1689280 state=TRAINING,
+2026-06-10T13:22:13,3,update_received,client-0,,30000
+2026-06-10T13:22:13,3,client_registered,client-1,,
+2026-06-10T13:22:13,3,model_pulled,client-1,bytes=1689280 state=TRAINING,
+2026-06-10T13:22:33,3,update_received,client-1,,30000
+2026-06-10T13:22:33,3,aggregation_start,,clients=2,
+2026-06-10T13:22:34,3,aggregation_done,,duration_ms=0.8,
+2026-06-10T13:22:34,3,evaluation_done,,accuracy=0.9923,
+2026-06-10T13:22:34,4,round_done,,advancing_to_round=4,
+2026-06-10T13:22:35,4,model_pulled,client-0,bytes=1689280 state=TRAINING,
+2026-06-10T13:22:35,4,model_pulled,client-1,bytes=1689280 state=TRAINING,
+2026-06-10T13:22:43,4,update_received,client-0,,30000
+2026-06-10T13:22:45,4,update_received,client-1,,30000
+2026-06-10T13:22:45,4,aggregation_start,,clients=2,
+2026-06-10T13:22:46,4,aggregation_done,,duration_ms=2.5,
+2026-06-10T13:22:46,4,evaluation_done,,accuracy=0.9925,
+2026-06-10T13:22:46,5,round_done,,advancing_to_round=5,
+2026-06-10T13:22:47,5,model_pulled,client-0,bytes=1689280 state=TRAINING,
+2026-06-10T13:22:47,5,model_pulled,client-1,bytes=1689280 state=TRAINING,
+2026-06-10T13:22:55,5,update_received,client-0,,30000
+2026-06-10T13:22:58,5,update_received,client-1,,30000
+2026-06-10T13:22:58,5,aggregation_start,,clients=2,
+2026-06-10T13:22:59,5,aggregation_done,,duration_ms=2.6,
+2026-06-10T13:22:59,5,evaluation_done,,accuracy=0.9922,
+2026-06-10T13:22:59,6,round_done,,advancing_to_round=6,
+2026-06-10T13:22:59,6,model_pulled,client-0,bytes=1689280 state=TRAINING,
+2026-06-10T13:23:00,6,model_pulled,client-1,bytes=1689280 state=TRAINING,
+2026-06-10T13:23:07,6,update_received,client-0,,30000
+2026-06-10T13:23:10,6,update_received,client-1,,30000
+2026-06-10T13:23:10,6,aggregation_start,,clients=2,
+2026-06-10T13:23:11,6,aggregation_done,,duration_ms=3.0,
+2026-06-10T13:23:11,6,evaluation_done,,accuracy=0.9936,
+2026-06-10T13:23:11,7,round_done,,advancing_to_round=7,
+2026-06-10T13:23:11,7,model_pulled,client-0,bytes=1689280 state=TRAINING,
+2026-06-10T13:23:12,7,model_pulled,client-1,bytes=1689280 state=TRAINING,
+2026-06-10T13:23:20,7,update_received,client-0,,30000
+2026-06-10T13:23:22,7,update_received,client-1,,30000
+2026-06-10T13:23:22,7,aggregation_start,,clients=2,
+2026-06-10T13:23:23,7,aggregation_done,,duration_ms=2.1,
+2026-06-10T13:23:23,7,evaluation_done,,accuracy=0.9934,
+2026-06-10T13:23:23,8,round_done,,advancing_to_round=8,
+2026-06-10T13:23:24,8,model_pulled,client-0,bytes=1689280 state=TRAINING,
+2026-06-10T13:23:24,8,model_pulled,client-1,bytes=1689280 state=TRAINING,
+2026-06-10T13:23:32,8,update_received,client-0,,30000
+2026-06-10T13:24:08,8,round_timeout,,received=1/2,
+2026-06-10T13:24:08,8,partial_aggregation,,received=1/2,
+2026-06-10T13:24:08,8,aggregation_start,,clients=1,
+2026-06-10T13:24:10,8,aggregation_done,,duration_ms=0.6,
+2026-06-10T13:24:10,8,evaluation_done,,accuracy=0.9924,
+2026-06-10T13:24:10,9,round_done,,advancing_to_round=9,
+2026-06-10T13:24:10,9,model_pulled,client-0,bytes=1689280 state=TRAINING,
+2026-06-10T13:24:18,9,update_received,client-0,,30000
+2026-06-10T13:24:55,9,round_timeout,,received=1/2,
+2026-06-10T13:24:55,9,partial_aggregation,,received=1/2,
+2026-06-10T13:24:55,9,aggregation_start,,clients=1,
+2026-06-10T13:24:56,9,aggregation_done,,duration_ms=0.5,
+2026-06-10T13:24:56,9,evaluation_done,,accuracy=0.9913,
+2026-06-10T13:24:56,10,round_done,,advancing_to_round=10,
+2026-06-10T13:24:56,10,model_pulled,client-0,bytes=1689280 state=TRAINING,
+2026-06-10T13:25:04,10,update_received,client-0,,30000
+2026-06-10T13:25:41,10,round_timeout,,received=1/2,
+2026-06-10T13:25:41,10,partial_aggregation,,received=1/2,
+2026-06-10T13:25:41,10,aggregation_start,,clients=1,
+2026-06-10T13:25:42,10,aggregation_done,,duration_ms=0.6,
+2026-06-10T13:25:42,10,evaluation_done,,accuracy=0.9922,
+2026-06-10T13:25:42,11,round_done,,advancing_to_round=11,
+2026-06-10T13:25:44,11,model_pulled,client-0,bytes=1689280 state=TRAINING,
+2026-06-10T13:25:52,11,update_received,client-0,,30000
+2026-06-10T13:26:27,11,round_timeout,,received=1/2,
+2026-06-10T13:26:27,11,partial_aggregation,,received=1/2,
+2026-06-10T13:26:27,11,aggregation_start,,clients=1,
+2026-06-10T13:26:28,11,aggregation_done,,duration_ms=0.5,
+2026-06-10T13:26:28,11,evaluation_done,,accuracy=0.9907,
+2026-06-10T13:26:28,12,round_done,,advancing_to_round=12,
+2026-06-10T13:26:30,12,model_pulled,client-0,bytes=1689280 state=TRAINING,
+2026-06-10T13:26:31,12,model_pulled,client-1,bytes=1689280 state=TRAINING,
+2026-06-10T13:26:38,12,update_received,client-0,,30000
+2026-06-10T13:26:38,12,update_received,client-1,,30000
+2026-06-10T13:26:38,12,aggregation_start,,clients=2,
+2026-06-10T13:26:40,12,aggregation_done,,duration_ms=0.7,
+2026-06-10T13:26:40,12,evaluation_done,,accuracy=0.9928,
+2026-06-10T13:26:40,13,round_done,,advancing_to_round=13,
+2026-06-10T13:26:40,13,model_pulled,client-0,bytes=1689280 state=TRAINING,
+2026-06-10T13:26:40,13,model_pulled,client-1,bytes=1689280 state=TRAINING,
+2026-06-10T13:26:47,13,update_received,client-0,,30000
+2026-06-10T13:26:58,13,update_received,client-1,,30000
+2026-06-10T13:26:58,13,aggregation_start,,clients=2,
+2026-06-10T13:26:59,13,aggregation_done,,duration_ms=2.4,
+2026-06-10T13:26:59,13,evaluation_done,,accuracy=0.9939,
+2026-06-10T13:26:59,14,round_done,,advancing_to_round=14,
+2026-06-10T13:26:59,14,model_pulled,client-0,bytes=1689280 state=TRAINING,
+2026-06-10T13:27:00,14,model_pulled,client-1,bytes=1689280 state=TRAINING,
+2026-06-10T13:27:07,14,update_received,client-0,,30000
+2026-06-10T13:27:16,14,update_received,client-1,,30000
+2026-06-10T13:27:16,14,aggregation_start,,clients=2,
+2026-06-10T13:27:17,14,aggregation_done,,duration_ms=2.9,
+2026-06-10T13:27:17,14,evaluation_done,,accuracy=0.9936,
+2026-06-10T13:27:17,15,round_done,,advancing_to_round=15,
+2026-06-10T13:27:17,15,model_pulled,client-0,bytes=1689280 state=TRAINING,
+2026-06-10T13:27:18,15,model_pulled,client-1,bytes=1689280 state=TRAINING,
+2026-06-10T13:27:25,15,update_received,client-0,,30000
+2026-06-10T13:27:40,15,update_received,client-1,,30000
+2026-06-10T13:27:40,15,aggregation_start,,clients=2,
+2026-06-10T13:27:41,15,aggregation_done,,duration_ms=2.0,
+2026-06-10T13:27:41,15,evaluation_done,,accuracy=0.9941,
+2026-06-10T13:27:41,16,round_done,,advancing_to_round=16,
+2026-06-10T13:27:41,16,model_pulled,client-0,bytes=1689280 state=TRAINING,
+2026-06-10T13:27:42,16,model_pulled,client-1,bytes=1689280 state=TRAINING,
+2026-06-10T13:27:49,16,update_received,client-0,,30000
+2026-06-10T13:28:04,16,update_received,client-1,,30000
+2026-06-10T13:28:04,16,aggregation_start,,clients=2,
+2026-06-10T13:28:05,16,aggregation_done,,duration_ms=2.0,
+2026-06-10T13:28:05,16,evaluation_done,,accuracy=0.9938,
+2026-06-10T13:28:05,16,round_done,,final state DONE,

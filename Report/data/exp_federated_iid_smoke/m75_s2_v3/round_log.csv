@@ -1,0 +1,4 @@
+round_id,num_clients_received,round_status,accuracy,test_loss,acc_class_0,acc_class_1,acc_class_2,acc_class_3,acc_class_4,acc_class_5,acc_class_6,acc_class_7,acc_class_8,acc_class_9,aggregation_time_ms,eval_time_ms,round_wallclock_sec,client_0_train_loss,client_0_num_samples,client_1_train_loss,client_1_num_samples
+1,1,partial,0.9831,0.053061,0.992857,0.997357,0.99031,0.993069,0.99389,0.98991,0.977035,0.955253,0.980493,0.960357,3.26,1056.25,21.07,0.067102,30000,0.0,0
+2,1,partial,0.9878,0.035469,0.988776,0.994714,0.993217,0.99505,0.983707,0.991031,0.991649,0.98249,0.974333,0.982161,0.69,1007.52,21.03,0.039742,30000,0.0,0
+3,1,partial,0.9885,0.032193,0.994898,0.999119,0.989341,0.99604,0.979633,0.987668,0.98643,0.986381,0.980493,0.983152,0.55,966.19,20.98,0.025282,30000,0.0,0

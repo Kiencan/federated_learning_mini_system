@@ -65,19 +65,6 @@ python client.py --client-id client-1 --shard-id 1 --num-shards 2 --straggler-de
 
 Chạy nhiều round, **Ctrl+C client-1 giữa run** rồi khởi động lại — server tiếp tục với 1 client (partial aggregation) rồi nhận lại client khi reconnect.
 
-### Phân tích + biểu đồ
-
-```powershell
-python analyze.py                       # đọc Report/data/ → Report/figures/*.png + metrics
-python analyze.py --data-root results   # hoặc chạy trên run outputs gốc
-```
-
-### Sinh báo cáo DOCX
-
-```powershell
-$env:NODE_PATH = (npm root -g); node generate_docx.js
-```
-
 ## Cấu trúc dự án
 
 ```text

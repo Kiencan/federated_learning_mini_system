@@ -116,8 +116,11 @@ def plot_round_time_breakdown(timing: pd.DataFrame, label: str) -> None:
     other_round_time_ms = round_wallclock_sec*1000 - agg - eval.
     Tên trung tính: gồm client train + download/upload + polling + wait.
     Chỉ mô tả NORMAL federated timing — fault-timeout phân tích riêng ở Exp 4.
+
+    Loại round 1 (client cold start: Python+torch+MNIST+GPU init ~80s) để thấy
+    rõ breakdown steady-state — round 1 là outlier không đại diện.
     """
-    df = timing.copy()
+    df = timing[timing["round_id"] >= 2].copy()  # bỏ cold-start round 1
     agg = df["aggregation_time_ms"]
     ev = df["eval_time_ms"]
     other = (df["round_wallclock_sec"] * 1000) - agg - ev
@@ -133,7 +136,10 @@ def plot_round_time_breakdown(timing: pd.DataFrame, label: str) -> None:
     )
     ax.set_xlabel("Round")
     ax.set_ylabel("Thời gian (giây)")
-    ax.set_title(f"Round time breakdown (coarse) — {label} cross-machine\n(round 1 gồm client cold start)")
+    ax.set_title(
+        f"Round time breakdown (coarse, steady-state) — {label} cross-machine\n"
+        f"(round 1 cold start ~80s đã loại; aggregation ~vài ms gần như vô hình)"
+    )
     ax.set_xticks(rounds)
     ax.grid(True, axis="y", alpha=0.3)
     ax.legend()
@@ -141,7 +147,11 @@ def plot_round_time_breakdown(timing: pd.DataFrame, label: str) -> None:
     out = FIG_DIR / "round_time_breakdown.png"
     fig.savefig(out, dpi=120)
     plt.close(fig)
-    print(f"  ✓ {out.name}")
+    # In số liệu steady-state để dùng trong báo cáo
+    print(
+        f"  ✓ {out.name}  (steady-state round 2+: other≈{other.mean()/1000:.1f}s, "
+        f"eval≈{ev.mean()/1000:.2f}s, agg≈{agg.mean():.1f}ms)"
+    )
 
 
 # ============================================================

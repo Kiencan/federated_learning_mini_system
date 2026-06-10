@@ -857,7 +857,7 @@ Branch xóa khỏi remote + local sau merge.
 
 ---
 
-## Milestone 7 — Straggler injection (M7.1–M7.5 hoàn thành; M7.6 đang chờ)
+## Milestone 7 — Straggler injection + Crash/Reconnect (M7.1–M7.7 hoàn thành)
 
 **Mục tiêu:** thêm flag `--straggler-delay N` (client-side) để inject artificial sleep INSIDE upload measurement window, tận dụng infrastructure timeout/partial của M6 để chạy 2 thí nghiệm: Straggler (Exp 3) + Crash/Reconnect (Exp 4). **Milestone hẹp nhất** kể từ M3 — code change ~31 dòng.
 
@@ -1043,18 +1043,95 @@ PR#5 merge vào main; sau đó dev fast-forward sync với main → tip thống 
 
 ---
 
-## Bước tiếp theo (M7.6 + Experiments)
+### M7.6 — Scenario F1 Crash/Reconnect cross-machine (`m76_f1_v3`)
 
-**M7.6 — Scenario F1 Crash/Reconnect (cross-machine với Máy 2)**
+**Setup:** Máy 1 chạy server (bind `0.0.0.0:50051`) + client-0 (shard 0). Máy 2 chạy client-1 (shard 1) qua LAN `192.168.2.30:50051`. `num_rounds=16`, `wait_timeout=45`, `min_clients=1`. Manual Ctrl+C/restart client-1 trên Máy 2 để mô phỏng crash + reconnect.
 
-- 12 round, manual Ctrl+C client-1 ở Máy 2 giữa run, sau đó restart
-- Acceptance flexible: ≥3 round ok đầu, ≥2 round partial giữa, ≥1 round ok sau restart, server set DONE sau round 12
-- Cần Máy 2 sẵn sàng + coordination timing — sẽ thực hiện khi user signal
+**Command:**
 
-**Sau M7.6, toàn bộ implementation done** → chuyển sang phase **Experiments**:
-- Exp 1: Centralized vs Federated (đã có M1 + M4.4 baseline)
-- Exp 2: IID vs Non-IID (đã có M4.4 + M5.4 baseline)
-- Exp 3: Straggler (data có rồi từ M7.4 + M7.5; cần analyze + plot)
-- Exp 4: Fault tolerance (cần M7.6 data)
+```powershell
+# Máy 1 server
+python server.py --bind 0.0.0.0:50051 --num-rounds 16 --wait-timeout 45 --min-clients 1 --run-id m76_f1_v3
+# Máy 1 client-0
+python client.py --client-id client-0 --shard-id 0 --num-shards 2 --server-addr 127.0.0.1:50051
+# Máy 2 client-1
+python client.py --client-id client-1 --shard-id 1 --num-shards 2 --server-addr 192.168.2.30:50051
+```
 
-Cuối cùng: **Báo cáo cuối kỳ** với 4 experiments + phân tích 5 vấn đề distributed systems của `ytuong.md` §7.
+**Kết quả — 4 phase rõ rệt:**
+
+| Phase | Rounds | Status | Received | Accuracy | `round_wallclock_sec` |
+|---|---|---|---|---|---|
+| Cold start (noise) | 1-2 | `partial` | 1 | 98.31-98.78% | ~46s (timeout) |
+| **Phase 1 — Healthy** | 3-7 | `ok` | 2 | 99.22-99.36% | 12-31s |
+| **Phase 3 — Degraded** (Ctrl+C) | 8-11 | `partial` | 1 | 99.07-99.24% | ~46s (timeout) |
+| **Phase 4 — Recovery** (restart) | 12-16 | `ok` | 2 | 99.28-99.41% | 12-24s |
+
+**Acceptance flexible — tất cả PASS:**
+- ✅ Đoạn liên tiếp `ok` ở đầu: **5 round (3-7)** ≥ 3 target
+- ✅ Đoạn liên tiếp `partial` ở giữa: **4 round (8-11)** ≥ 2 target
+- ✅ ≥1 round `ok` sau restart: **5 round (12-16)** recovery
+- ✅ Server set DONE sau round 16, không stuck
+- ✅ Accuracy phục hồi 99.41% (round 15) — không degrade sau crash/recovery cycle
+
+**Client-1 lifecycle gap (events.csv) — bằng chứng crash window:**
+
+```
+13:22:13  client_registered client-1 (round 3 — Máy 2 cold start ~90s sau server boot)
+13:22:33  update_received client-1 round 3
+13:22:45  update_received client-1 round 4
+13:22:58  update_received client-1 round 5
+13:23:10  update_received client-1 round 6
+13:23:22  update_received client-1 round 7   ← last before Ctrl+C
+   ─── GAP ~3 phút (rounds 8-11 không có client-1) ───
+13:26:38  update_received client-1 round 12  ← first after restart
+13:26:58  update_received client-1 round 13
+13:27:16  update_received client-1 round 14
+13:27:40  update_received client-1 round 15
+13:28:04  update_received client-1 round 16
+```
+
+Gap round 7→12 (3 phút 16s) khớp chính xác 4 round `partial` degraded — server tiếp tục với client-0 duy nhất, không crash, restart client-1 rejoin liền mạch từ round 12. **Đây là minh chứng end-to-end cho fault tolerance của M6 infrastructure** (Path B partial + dynamic min_clients).
+
+#### Forensic: 2 lần chạy F1 thất bại trước v3
+
+| Run | num_rounds / timeout | Kết quả | Nguyên nhân |
+|---|---|---|---|
+| `m76_f1_cross` (v1) | 12 / 30 | 12/12 `ok` | Round nhanh (~13s) → cửa sổ Ctrl+C giữa round quá hẹp, không catch kịp |
+| `m76_f1_v2` | 16 / 45 | 16/16 `partial` | Máy 2 launch client-1 **sau khi server đã DONE** → client-1 thấy DONE, thoát ngay; 0 round có client-1 |
+
+**Bài học timing:** (1) Round ngắn (~13s) làm cửa sổ Ctrl+C "giữa 2 round" quá hẹp — `wait_timeout` lớn (45s) nới rộng cửa sổ degraded để thao tác manual dễ canh. (2) Cross-machine cần verify client-1 `client_registered` qua events.csv **trước** khi coi healthy phase bắt đầu — Máy 2 cold start (Python+torch+MNIST) mất ~90s, dễ trễ deadline round đầu. v3 dùng monitor poll events.csv để điều phối chính xác từng phase.
+
+**Connectivity note:** Inbound firewall Allow rule cho `fedml/python.exe` đã tồn tại (Windows prompt chấp nhận từ M3.9). `TcpTest False` từ Máy 2 chỉ xảy ra khi không có server listening (giữa các run) — không phải firewall block.
+
+### M7.7 — Documentation (section này)
+
+Toàn bộ M7.0–M7.6 documented. `Report/m7_plan.md` (plan + 6 vòng review) + `Report/milestone_report.md` (M7 section) hoàn chỉnh.
+
+### Tổng kết M7
+
+| Sub | Description | Status | Artifact |
+|---|---|---|---|
+| M7.0 | Plan + 6 vòng review (22 fixes) | ✅ | `m7_plan.md` |
+| M7.1 | `run_context.py` CLI flag (+10 LOC) | ✅ | `41b85d0` |
+| M7.2 | `client.py` validation + sleep (+21 LOC) | ✅ | `41b85d0` |
+| M7.3 | Backward compat smoke | ✅ | `m7_smoke_compat` acc 98.52% |
+| M7.4 | S1 localhost (delay 5, timeout 60) | ✅ | `m74_s1_localhost` 3/3 ok, acc 99.17% |
+| M7.5 | S2 localhost (delay 20, timeout 20) | ✅ | `m75_s2_v3` 3/3 partial, acc 98.85% |
+| M7.6 | F1 cross-machine crash/reconnect | ✅ | `m76_f1_v3` 4-phase, acc 99.41% |
+| M7.7 | milestone_report documentation | ✅ | section này |
+
+**M7 hoàn thành 100%** — toàn bộ implementation của dự án done.
+
+---
+
+## Bước tiếp theo — Phase Experiments
+
+Toàn bộ implementation M1-M7 done. Data đã sẵn cho cả 4 experiments:
+
+- **Exp 1 — Centralized vs Federated**: M1 baseline (centralized) + M4.4 (federated IID) → so sánh accuracy/round, convergence
+- **Exp 2 — IID vs Non-IID**: M4.4 (IID) + M5.4 (Non-IID pathological) → impact của data heterogeneity lên FedAvg
+- **Exp 3 — Straggler**: M7.4 S1 (`round_wallclock` +5s/round, vẫn ok) + M7.5 S2 (timeout drop, partial) → straggler impact lên round latency vs accuracy
+- **Exp 4 — Fault tolerance**: M7.6 F1 (4-phase crash/recovery) → accuracy degradation khi 1 client crashed + recovery time
+
+Còn lại: **analyze + plot** từ data có sẵn (round_log.csv của các run), rồi viết **báo cáo cuối kỳ** với 4 experiments + phân tích 5 vấn đề distributed systems của `ytuong.md` §7.

@@ -1,7 +1,8 @@
-"""MNIST loading + IID / Non-IID partition cho federated clients.
+"""Dataset loading + IID / Non-IID partition cho federated clients.
 
-Centralized baseline (Milestone 1) chỉ cần `load_mnist` để lấy full train/test loader.
-Federated milestones sẽ dùng `partition_iid` và `partition_noniid_pathological`.
+Hỗ trợ MNIST (1×28×28) và CIFAR-10 (3×32×32). Chọn qua `load_dataset(name)`.
+Centralized baseline chỉ cần full train/test loader; federated milestones dùng
+`partition_iid` và `partition_noniid_pathological` (logic dataset-agnostic).
 """
 from __future__ import annotations
 
@@ -9,14 +10,18 @@ from typing import List
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader, Dataset, Subset
 from torchvision import datasets, transforms
 
 MNIST_MEAN = (0.1307,)
 MNIST_STD = (0.3081,)
 
+# CIFAR-10 per-channel mean/std (RGB), tính trên train set chuẩn.
+CIFAR10_MEAN = (0.4914, 0.4822, 0.4465)
+CIFAR10_STD = (0.2470, 0.2435, 0.2616)
 
-def _transform() -> transforms.Compose:
+
+def _mnist_transform() -> transforms.Compose:
     return transforms.Compose(
         [
             transforms.ToTensor(),
@@ -25,11 +30,40 @@ def _transform() -> transforms.Compose:
     )
 
 
+def _cifar10_transform() -> transforms.Compose:
+    return transforms.Compose(
+        [
+            transforms.ToTensor(),
+            transforms.Normalize(CIFAR10_MEAN, CIFAR10_STD),
+        ]
+    )
+
+
 def load_mnist(data_root: str = "./data") -> tuple[datasets.MNIST, datasets.MNIST]:
     """Tải MNIST train/test (download nếu chưa có)."""
-    train = datasets.MNIST(data_root, train=True, download=True, transform=_transform())
-    test = datasets.MNIST(data_root, train=False, download=True, transform=_transform())
+    train = datasets.MNIST(data_root, train=True, download=True, transform=_mnist_transform())
+    test = datasets.MNIST(data_root, train=False, download=True, transform=_mnist_transform())
     return train, test
+
+
+def load_cifar10(data_root: str = "./data") -> tuple[datasets.CIFAR10, datasets.CIFAR10]:
+    """Tải CIFAR-10 train/test (download nếu chưa có)."""
+    train = datasets.CIFAR10(data_root, train=True, download=True, transform=_cifar10_transform())
+    test = datasets.CIFAR10(data_root, train=False, download=True, transform=_cifar10_transform())
+    return train, test
+
+
+def load_dataset(dataset: str, data_root: str = "./data") -> tuple[Dataset, Dataset]:
+    """Factory chọn dataset theo tên. Raise ValueError nếu không hỗ trợ.
+
+    dataset: "mnist" | "cifar10". Cả hai đều 10 lớp → aggregation.evaluate()
+    (hardcode 10 lớp) và FedAvg dùng chung không cần đổi.
+    """
+    if dataset == "mnist":
+        return load_mnist(data_root)
+    if dataset == "cifar10":
+        return load_cifar10(data_root)
+    raise ValueError(f"load_dataset: dataset không hỗ trợ {dataset!r} (mnist|cifar10)")
 
 
 def make_loader(dataset, batch_size: int, shuffle: bool, num_workers: int = 0) -> DataLoader:
@@ -42,7 +76,7 @@ def make_loader(dataset, batch_size: int, shuffle: bool, num_workers: int = 0) -
     )
 
 
-def partition_iid(train: datasets.MNIST, num_clients: int, seed: int = 42) -> List[Subset]:
+def partition_iid(train: Dataset, num_clients: int, seed: int = 42) -> List[Subset]:
     """Chia ngẫu nhiên đều — mỗi client có phân phối tương tự full set."""
     rng = np.random.default_rng(seed)
     indices = np.arange(len(train))
@@ -52,10 +86,11 @@ def partition_iid(train: datasets.MNIST, num_clients: int, seed: int = 42) -> Li
 
 
 def partition_noniid_pathological(
-    train: datasets.MNIST, num_clients: int = 2
+    train: Dataset, num_clients: int = 2
 ) -> List[Subset]:
-    """Pathological split: Client 1 chỉ có digits 0-4, Client 2 chỉ có 5-9.
+    """Pathological split: Client 1 chỉ có lớp 0-4, Client 2 chỉ có lớp 5-9.
 
+    Dataset-agnostic: MNIST = digits 0-4 / 5-9, CIFAR-10 = 5 lớp đầu / 5 lớp sau.
     Chỉ hỗ trợ num_clients = 2 (theo design trong ytuong.md). Đây là trường hợp
     cực đoan để stress test FedAvg dưới Non-IID.
     """

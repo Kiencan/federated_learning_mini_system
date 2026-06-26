@@ -33,8 +33,8 @@ import grpc
 import torch
 import torch.nn.functional as F
 
-from data_partition import load_mnist, make_loader, partition_iid, partition_noniid_pathological
-from model import MnistCNN, load_state_dict_from_bytes, serialize_state_dict
+from data_partition import load_dataset, make_loader, partition_iid, partition_noniid_pathological
+from model import build_model, load_state_dict_from_bytes, serialize_state_dict
 from proto import federated_pb2, federated_pb2_grpc
 from run_context import build_cli_parser, cli_overrides, load_config, set_seed
 
@@ -163,7 +163,7 @@ def do_one_round(
     )
 
     # Buoc 2: Tao model MOI tu global weights + optimizer MOI (moi round)
-    model = MnistCNN()
+    model = build_model(cfg.get("dataset", "mnist"))
     load_state_dict_from_bytes(model, model_resp.serialized_state_dict)
     model.to(device)
     optimizer = torch.optim.SGD(
@@ -256,8 +256,10 @@ def run_federated(args, cfg: dict, server_addr: str) -> None:
         print(f"[client {client_id}] WARN: CUDA not available, fallback to CPU")
         device = torch.device("cpu")
 
-    # MNIST shard + DataLoader — tao 1 lan, reuse qua cac round
-    train_set, _ = load_mnist(data_root=cfg.get("data_root", "./data"))
+    # Dataset shard + DataLoader — tao 1 lan, reuse qua cac round
+    dataset = cfg.get("dataset", "mnist")
+    train_set, _ = load_dataset(dataset, data_root=cfg.get("data_root", "./data"))
+    print(f"[client {client_id}] dataset={dataset}")
 
     data_split = cfg.get("data_split", "iid")
 

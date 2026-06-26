@@ -21,17 +21,22 @@ from __future__ import annotations
 
 import csv
 import io
+import sys
 import threading
 import time
 from concurrent import futures
 from datetime import datetime
 
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
 import grpc
 import torch
 
 from aggregation import evaluate, fedavg
-from data_partition import load_mnist, make_loader
-from model import MnistCNN, serialize_state_dict
+from data_partition import load_dataset, make_loader
+from model import build_model, serialize_state_dict
 from proto import federated_pb2, federated_pb2_grpc
 from run_context import (
     RunContext,
@@ -68,12 +73,12 @@ def _do_fedavg(updates_snapshot):
     return new_state_dict, agg_ms
 
 
-def _do_evaluate(state_dict, test_loader, device):
+def _do_evaluate(state_dict, test_loader, device, dataset):
     """Eval state_dict trên test loader (temp model — KHÔNG chạm s.model).
 
     Returns (test_loss, accuracy, per_class, eval_ms).
     """
-    temp_model = MnistCNN()
+    temp_model = build_model(dataset)
     temp_model.load_state_dict(state_dict)
     t0 = time.perf_counter()
     test_loss, accuracy, per_class = evaluate(temp_model, test_loader, device)
@@ -105,10 +110,15 @@ class ServerState:
         "aggregation_time_ms",
         "eval_time_ms",
         "round_wallclock_sec",
+        "model_bytes",                         # CIFAR phase: payload model (download≈upload)
         "client_0_train_loss",
         "client_0_num_samples",
+        "client_0_download_ms",                # CIFAR phase: comm (pull global model)
+        "client_0_train_ms",                   # CIFAR phase: compute (train local)
         "client_1_train_loss",
         "client_1_num_samples",
+        "client_1_download_ms",
+        "client_1_train_ms",
     ]
 
     EVENT_LOG_FIELDS = ["timestamp", "round_id", "event", "client_id", "message", "num_samples"]
@@ -121,8 +131,9 @@ class ServerState:
         self.condition = threading.Condition(self.lock)  # M6: aggregation thread signal
         self.shutdown = False                    # M6: graceful exit flag
 
-        # Global model
-        self.model = MnistCNN()
+        # Global model — kiến trúc theo dataset (mnist=MnistCNN, cifar10=CifarCNN)
+        self.dataset = cfg.get("dataset", "mnist")
+        self.model = build_model(self.dataset)
         self.eval_device = "cpu"
 
         # Round state
@@ -151,7 +162,7 @@ class ServerState:
         self._metadata_written: set[str] = set()
 
         # Test data cho server eval
-        _, test_set = load_mnist()
+        _, test_set = load_dataset(self.dataset)
         self.test_loader = make_loader(
             test_set, batch_size=cfg["batch_size"] * 4, shuffle=False
         )
@@ -233,9 +244,15 @@ def _write_round_log_row(state, round_id, updates_snapshot, accuracy, test_loss,
     """Ghi 1 row cho path A ('ok') hoặc B ('partial')."""
     wallclock = time.time() - state.round_start_time
     # M3: hardcoded 2 clients per m3_plan §6 (refactor note khi num_clients > 2)
-    client_info = {cid: (u.train_loss, u.num_samples) for cid, u in updates_snapshot}
-    c0_loss, c0_n = client_info.get("client-0", (0.0, 0))
-    c1_loss, c1_n = client_info.get("client-1", (0.0, 0))
+    # CIFAR phase: kèm timing (download_ms = comm, train_ms = compute) + payload size.
+    client_info = {
+        cid: (u.train_loss, u.num_samples, u.timing.download_ms, u.timing.train_ms)
+        for cid, u in updates_snapshot
+    }
+    c0_loss, c0_n, c0_dl, c0_tr = client_info.get("client-0", (0.0, 0, 0.0, 0.0))
+    c1_loss, c1_n, c1_dl, c1_tr = client_info.get("client-1", (0.0, 0, 0.0, 0.0))
+    # Payload model: lấy từ update bất kỳ (download≈upload vì cùng state_dict).
+    model_bytes = len(updates_snapshot[0][1].serialized_state_dict) if updates_snapshot else 0
     row = {
         "round_id": round_id,
         "num_clients_received": len(updates_snapshot),
@@ -246,10 +263,15 @@ def _write_round_log_row(state, round_id, updates_snapshot, accuracy, test_loss,
         "aggregation_time_ms": round(agg_ms, 2),
         "eval_time_ms": round(eval_ms, 2),
         "round_wallclock_sec": round(wallclock, 2),
+        "model_bytes": model_bytes,
         "client_0_train_loss": round(c0_loss, 6),
         "client_0_num_samples": c0_n,
+        "client_0_download_ms": round(c0_dl, 2),
+        "client_0_train_ms": round(c0_tr, 2),
         "client_1_train_loss": round(c1_loss, 6),
         "client_1_num_samples": c1_n,
+        "client_1_download_ms": round(c1_dl, 2),
+        "client_1_train_ms": round(c1_tr, 2),
     }
     with state.round_log_path.open("a", newline="", encoding="utf-8") as f:
         csv.DictWriter(f, fieldnames=ServerState.ROUND_LOG_FIELDS).writerow(row)
@@ -267,10 +289,15 @@ def _write_skipped_round_row(state, round_id, received_count):
         "aggregation_time_ms": "",
         "eval_time_ms": "",
         "round_wallclock_sec": round(time.time() - state.round_start_time, 2),
+        "model_bytes": "",
         "client_0_train_loss": "",
         "client_0_num_samples": "",
+        "client_0_download_ms": "",
+        "client_0_train_ms": "",
         "client_1_train_loss": "",
         "client_1_num_samples": "",
+        "client_1_download_ms": "",
+        "client_1_train_ms": "",
     }
     with state.round_log_path.open("a", newline="", encoding="utf-8") as f:
         csv.DictWriter(f, fieldnames=ServerState.ROUND_LOG_FIELDS).writerow(row)
@@ -341,7 +368,7 @@ def run_aggregation_loop(state: ServerState) -> None:
 
         new_state_dict, agg_ms = _do_fedavg(updates_snapshot)
         test_loss, accuracy, per_class, eval_ms = _do_evaluate(
-            new_state_dict, state.test_loader, state.eval_device
+            new_state_dict, state.test_loader, state.eval_device, state.dataset
         )
         _write_round_log_row(
             state, round_id, updates_snapshot, accuracy, test_loss,
@@ -520,7 +547,8 @@ def main() -> None:
     print(f"[server] listening on {args.bind}")
     print(f"[server] run_dir={ctx.run_dir}")
     print(
-        f"[server] num_rounds={state.num_rounds_total} "
+        f"[server] dataset={state.dataset} "
+        f"num_rounds={state.num_rounds_total} "
         f"min_clients={state.min_clients}/{state.expected_count} "
         f"wait_timeout={state.wait_timeout}s "
         f"expected={sorted(state.expected_client_ids)}"

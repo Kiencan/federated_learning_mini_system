@@ -2,6 +2,10 @@
 # Centralized chỉ dùng: num_epochs (=num_rounds), batch_size, lr, seed, device.
 # Federated dùng thêm: num_rounds, local_epochs, wait_timeout, min_clients, server_addr, data_split, straggler_delay.
 
+# Dataset
+dataset: "mnist"          # mnist | cifar10 — chọn data + kiến trúc model (build_model)
+                          # Override --dataset cifar10 cho thí nghiệm mở rộng
+
 # Training
 num_rounds: 30            # số round federated; centralized dùng làm num_epochs
 local_epochs: 2           # epochs/round trên mỗi client

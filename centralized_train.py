@@ -11,12 +11,13 @@ import time
 from pathlib import Path
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torch import optim
 
 from aggregation import evaluate
-from data_partition import load_mnist, make_loader
-from model import MnistCNN
+from data_partition import load_dataset, make_loader
+from model import build_model
 from run_context import (
     build_cli_parser,
     cli_overrides,
@@ -27,7 +28,7 @@ from run_context import (
 )
 
 
-def train_one_epoch(model: MnistCNN, loader, optimizer, device: str) -> float:
+def train_one_epoch(model: nn.Module, loader, optimizer, device: str) -> float:
     model.train()
     total_loss = 0.0
     total_samples = 0
@@ -58,13 +59,14 @@ def main() -> None:
     device = cfg["device"] if torch.cuda.is_available() or cfg["device"] == "cpu" else "cpu"
     if device == "cuda" and not torch.cuda.is_available():
         device = "cpu"
-    print(f"[centralized] run_dir={ctx.run_dir} device={device}")
+    dataset = cfg.get("dataset", "mnist")
+    print(f"[centralized] run_dir={ctx.run_dir} device={device} dataset={dataset}")
 
-    train_set, test_set = load_mnist()
+    train_set, test_set = load_dataset(dataset)
     train_loader = make_loader(train_set, cfg["batch_size"], shuffle=True)
     test_loader = make_loader(test_set, cfg["batch_size"] * 4, shuffle=False)
 
-    model = MnistCNN().to(device)
+    model = build_model(dataset).to(device)
     optimizer = optim.SGD(model.parameters(), lr=cfg["lr"], momentum=0.9)
 
     log_path = ctx.run_dir / "round_log.csv"

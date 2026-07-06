@@ -142,6 +142,7 @@ class ServerState:
         self.num_rounds_total = cfg["num_rounds"]
         self.min_clients = int(cfg["min_clients"])
         self.wait_timeout = float(cfg["wait_timeout"])      # M6
+        self.startup_timeout = float(cfg.get("startup_timeout", 180))  # CIFAR: rendezvous
         self.expected_client_ids: set[str] = set(cfg["expected_client_ids"])
         self.expected_count = len(self.expected_client_ids)  # M6
 
@@ -308,8 +309,51 @@ def _write_skipped_round_row(state, round_id, received_count):
 # ============================================================
 
 
+def _rendezvous_wait_for_clients(state: ServerState) -> None:
+    """CIFAR phase: chờ đủ expected client register TRƯỚC khi đếm round 1.
+
+    Client register khi gọi GetGlobalModel lần đầu (pull model). Trước đây
+    round_start_time đặt ngay khi server bật → round-1 wallclock cộng luôn thời
+    gian client boot/join (nặng nhất là client máy khác qua mạng: import torch +
+    init CUDA + load data + độ trễ launch). Pha này chờ tất cả client lên rồi mới
+    reset round_start_time, để round-1 đo đúng thời gian round thật.
+
+    Bounded bởi startup_timeout: nếu 1 client không lên (vd crash/máy tắt), sau
+    timeout vẫn tiếp tục với số client hiện có (đúng ngữ nghĩa min_clients).
+    """
+    with state.condition:
+        deadline = time.time() + state.startup_timeout
+        while not state.shutdown and len(state._seen_clients) < state.expected_count:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                state.log_event(
+                    "rendezvous_timeout",
+                    message=f"registered={len(state._seen_clients)}/{state.expected_count}",
+                )
+                break
+            state.condition.wait(timeout=remaining)
+        if state.shutdown:
+            return
+        # Reset đồng hồ round 1: từ đây mới tính, sau khi client đã sẵn sàng
+        state.round_start_time = time.time()
+        state.log_event(
+            "rendezvous_done",
+            message=f"registered={len(state._seen_clients)}/{state.expected_count}",
+        )
+    print(
+        f"[server] rendezvous done: "
+        f"{len(state._seen_clients)}/{state.expected_count} clients registered"
+    )
+
+
 def run_aggregation_loop(state: ServerState) -> None:
-    """3-phase loop per round (see module docstring)."""
+    """3-phase loop per round (see module docstring).
+
+    CIFAR phase: chạy pha rendezvous 1 lần trước round 1 (xem
+    _rendezvous_wait_for_clients) để loại boot/join time khỏi round-1 wallclock.
+    """
+    _rendezvous_wait_for_clients(state)
+
     while not state.shutdown:
         # ── Phase 1: wait + snapshot (lock held) ────────────────────────────
         with state.condition:
@@ -421,8 +465,11 @@ class FederatedServicer(federated_pb2_grpc.FederatedLearningServicer):
         )
 
     def GetGlobalModel(self, request, context):
-        with self.s.lock:
+        with self.s.condition:
+            newly_seen = request.client_id not in self.s._seen_clients
             self.s.mark_client_seen_locked(request.client_id)
+            if newly_seen:
+                self.s.condition.notify_all()  # đánh thức pha rendezvous
             payload = serialize_state_dict(self.s.model)
             round_id = self.s.current_round
             current_state = self.s.state  # snapshot cho observability
@@ -551,6 +598,7 @@ def main() -> None:
         f"num_rounds={state.num_rounds_total} "
         f"min_clients={state.min_clients}/{state.expected_count} "
         f"wait_timeout={state.wait_timeout}s "
+        f"startup_timeout={state.startup_timeout}s "
         f"expected={sorted(state.expected_client_ids)}"
     )
     print("[server] state=TRAINING round=1 - waiting for clients")

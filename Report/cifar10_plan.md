@@ -80,5 +80,11 @@ Phân tích communication overhead chiếm bao nhiêu % round time khi scale ra 
 - [x] Refactor dataset-agnostic + CifarCNN + cột communication timing
 - [x] Smoke test e2e CIFAR-10 PASS (2 round, acc 57%→66%, cột timing ghi đúng)
 - [x] Regression MNIST OK
-- [ ] Chạy benchmark B1/B2/B3 trên 2 máy
-- [ ] Viết báo cáo so sánh (bổ sung vào `Report/`)
+- [x] Chạy benchmark B1/B2/B3 trên 2 máy (30 round mỗi bộ, data ở `Report/data/`)
+- [x] Đo throughput thô link Ethernet: **2.36 Gbps** (`tools/throughput_test.py`, 1GB)
+- [x] Sinh 3 hình so sánh (`analyze_cifar.py` → `Report/figures/cifar_*.png`)
+- [x] Viết báo cáo so sánh: [bao_cao_cifar10.md](bao_cao_cifar10.md)
+
+**Kết quả cuối:** B1 80.26% · B2 81.59% · B3 81.51% accuracy. Communication chỉ chiếm
+~0.3% round time; nút cổ chai là compute + đồng bộ, không phải mạng. Phân tán 2 máy KHÔNG
+tăng tốc với workload nhẹ này (round bị gate bởi node kiêm server). Chi tiết trong báo cáo.

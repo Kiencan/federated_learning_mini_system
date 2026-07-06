@@ -241,9 +241,12 @@ def _advance_to_next_round_locked(state: ServerState) -> None:
 
 
 def _write_round_log_row(state, round_id, updates_snapshot, accuracy, test_loss,
-                          per_class, agg_ms, eval_ms, status):
-    """Ghi 1 row cho path A ('ok') hoặc B ('partial')."""
-    wallclock = time.time() - state.round_start_time
+                          per_class, agg_ms, eval_ms, wallclock, status):
+    """Ghi 1 row cho path A ('ok') hoặc B ('partial').
+
+    `wallclock` được caller chốt lúc commit (trước advance) vì eval giờ chạy SAU
+    khi advance round (off critical path) → không tự tính được từ round_start_time.
+    """
     # M3: hardcoded 2 clients per m3_plan §6 (refactor note khi num_clients > 2)
     # CIFAR phase: kèm timing (download_ms = comm, train_ms = compute) + payload size.
     client_info = {
@@ -402,25 +405,18 @@ def run_aggregation_loop(state: ServerState) -> None:
                 print(f"[server] round {round_id} SKIPPED (received={received_count})")
                 continue
 
-        # ── Phase 2: heavy work (NO lock) ────────────────────────────────────
+        # ── Phase 2: aggregate (NO lock, chỉ FedAvg ~ms) ─────────────────────
         if is_partial:
             state.log_event(
                 "partial_aggregation",
                 message=f"received={received_count}/{state.expected_count}",
             )
         state.log_event("aggregation_start", message=f"clients={received_count}")
-
         new_state_dict, agg_ms = _do_fedavg(updates_snapshot)
-        test_loss, accuracy, per_class, eval_ms = _do_evaluate(
-            new_state_dict, state.test_loader, state.eval_device, state.dataset
-        )
-        _write_round_log_row(
-            state, round_id, updates_snapshot, accuracy, test_loss,
-            per_class, agg_ms, eval_ms,
-            status="partial" if is_partial else "ok",
-        )
 
-        # ── Phase 3: commit + advance (lock held, fast <10ms) ────────────────
+        # ── Phase 3: commit + advance (lock, fast <10ms) — client ĐƯỢC GIẢI PHÓNG ─
+        # CIFAR opt-A: advance NGAY sau FedAvg để client pull model round sau + train,
+        # KHÔNG chờ eval. Eval (~3s CPU) chuyển xuống Phase 4 chạy off critical path.
         with state.condition:
             # Guard 1: shutdown → return im lặng (KHÔNG log commit_aborted)
             if state.shutdown:
@@ -435,17 +431,31 @@ def run_aggregation_loop(state: ServerState) -> None:
                 )
                 continue
 
+            # Chốt wallclock TRƯỚC advance (advance reset round_start_time cho round sau)
+            round_wallclock = time.time() - state.round_start_time
             state.model.load_state_dict(new_state_dict)
             state.log_event("aggregation_done", message=f"duration_ms={agg_ms:.1f}")
-            state.log_event("evaluation_done", message=f"accuracy={accuracy:.4f}")
             _advance_to_next_round_locked(state)
             state.condition.notify_all()
 
-            status_str = "partial" if is_partial else "done"
-            print(
-                f"[server] round {round_id} {status_str} acc={accuracy:.4f} "
-                f"loss={test_loss:.4f} agg={agg_ms:.1f}ms eval={eval_ms:.1f}ms"
-            )
+        # ── Phase 4: eval + log (NO lock) — chạy SONG SONG client train round sau ─
+        # Eval trên state_dict của round vừa xong (temp model, không chạm state.model),
+        # nên an toàn khi round sau đang chạy. train round sau (~8-10s) >> eval (~3s).
+        test_loss, accuracy, per_class, eval_ms = _do_evaluate(
+            new_state_dict, state.test_loader, state.eval_device, state.dataset
+        )
+        _write_round_log_row(
+            state, round_id, updates_snapshot, accuracy, test_loss,
+            per_class, agg_ms, eval_ms, round_wallclock,
+            status="partial" if is_partial else "ok",
+        )
+        state.log_event("evaluation_done", message=f"round={round_id} accuracy={accuracy:.4f}")
+
+        status_str = "partial" if is_partial else "done"
+        print(
+            f"[server] round {round_id} {status_str} acc={accuracy:.4f} "
+            f"loss={test_loss:.4f} agg={agg_ms:.1f}ms eval={eval_ms:.1f}ms(off-path)"
+        )
 
 
 # ============================================================

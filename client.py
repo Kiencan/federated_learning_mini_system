@@ -38,7 +38,8 @@ from model import build_model, load_state_dict_from_bytes, serialize_state_dict
 from proto import federated_pb2, federated_pb2_grpc
 from run_context import build_cli_parser, cli_overrides, load_config, set_seed
 
-POLL_INTERVAL_SEC = 2.0
+POLL_INTERVAL_SEC = 0.5  # CIFAR opt-A: giảm từ 2.0 → phát hiện round mới nhanh hơn,
+                         # cắt ~1-1.5s dead time/round giữa lúc server advance và client pull
 
 
 # ============================================================

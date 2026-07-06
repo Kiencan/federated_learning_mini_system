@@ -27,13 +27,13 @@ dùng **model lớn hơn**, đo và so sánh **3 tiêu chí**: thời gian train
 
 | Kịch bản | Best acc | Final acc | Tổng thời gian | Train/round | Comm/round |
 |----------|:--------:|:---------:|:--------------:|:-----------:|:----------:|
-| **B1 Centralized** | 81.17% | 80.26% | **249.6s** | 8.32s/epoch | — |
-| **B2 Fed localhost** | 81.90% | 81.59% | **360.7s** | 8.30s | 28.2ms |
+| **B1 Centralized** | 81.17% | 80.26% | **237.6s** | 7.92s/epoch | — |
+| **B2 Fed localhost** | 82.24% | 81.97% | **340.3s** | 8.47s | 27.4ms |
 | **B3 Fed 2 máy (Ethernet)** | 82.11% | 81.73% | **431.0s** | 9.10s | 42.7ms |
 
-> B3 dùng bản chạy có **rendezvous barrier** (§3.4) — round-1 đo sạch (10.96s thay vì 89.6s).
-> `Train/round` và `Comm/round` là trung bình 2 client trên các round `ok` (bỏ round 1).
-> `Comm/round ≈ 2 × download` (download model + upload update, payload đối xứng).
+> Cả 3 kịch bản anchor trên Máy 1 (phần cứng nhất quán); B2/B3 dùng **rendezvous barrier**
+> (§3.4) nên round-1 đo sạch (B2 11.34s, B3 10.96s). `Train/round` và `Comm/round` là trung
+> bình 2 client trên các round `ok` (bỏ round 1). `Comm/round ≈ 2 × download` (đối xứng).
 
 **Hình minh hoạ** (sinh bởi [analyze_cifar.py](../analyze_cifar.py), lưu ở `Report/figures/`):
 - `cifar_accuracy_per_round.png` — đường hội tụ accuracy 3 kịch bản
@@ -47,7 +47,7 @@ dùng **model lớn hơn**, đo và so sánh **3 tiêu chí**: thời gian train
 Cả 3 kịch bản đạt **~80–82%**, gần như bằng nhau:
 - Federated (B2/B3) nhỉnh hơn centralized (B1) một chút vì mỗi round có 2 local epoch →
   30 round ≈ 60 epoch-equivalent so với 30 epoch của centralized.
-- **B3 (2 máy, 81.73%) ≈ B2 (1 máy, 81.59%)**: phân tán vật lý **không** làm giảm accuracy —
+- **B3 (2 máy, 81.73%) ≈ B2 (1 máy, 81.97%)**: phân tán vật lý **không** làm giảm accuracy —
   FedAvg cho kết quả nhất quán bất kể client nằm trên 1 hay 2 máy. Đây là tính đúng đắn
   (correctness) của thuật toán phân tán.
 - Model nhỏ tới hạn ở ~82% (train_loss thấp nhưng test acc bão hoà — plateau từ round ~15).
@@ -58,11 +58,11 @@ Cả 3 kịch bản đạt **~80–82%**, gần như bằng nhau:
 
 | Đo | Giá trị |
 |----|---------|
-| Download model/round (localhost B2) | ~14.1ms |
+| Download model/round (localhost B2) | ~12.7ms |
 | Download model/round (Ethernet B3) | ~21.3ms |
 | Communication/round (B3, ≈2×download) | **42.7ms** |
 | Tỷ lệ comm / thời gian 1 round (~14.5s) | **~0.3%** |
-| Ethernet / localhost | 1.5× |
+| Ethernet / localhost | 1.6× |
 | **Throughput thô của link (test 1GB)** | **281.8 MB/s = 2.36 Gbps** (~94% của 2.5GbE) |
 | Throughput hiệu dụng khi truyền model (2.38MB qua gRPC) | ~0.88 Gbps |
 
@@ -77,7 +77,7 @@ Cả 3 kịch bản đạt **~80–82%**, gần như bằng nhau:
 
 ### 3.3. Thời gian train — 1 máy vs 2 máy
 
-Ngược với kỳ vọng "chia 2 máy sẽ nhanh hơn", **B3 (431s) vẫn chậm hơn B2 (361s) và B1 (250s)**.
+Ngược với kỳ vọng "chia 2 máy sẽ nhanh hơn", **B3 (431s) vẫn chậm hơn B2 (340s) và B1 (238s)**.
 Nguyên nhân **không phải communication** (chỉ 0.3%) mà là **mất cân bằng tải + rào đồng bộ**:
 
 - **Rào đồng bộ (synchronous barrier).** FedAvg đồng bộ phải **chờ client chậm nhất** mỗi round.
@@ -118,6 +118,10 @@ không lên (đúng ngữ nghĩa `min_clients`).
 Steady-state (round 2-30) **không đổi** trước/sau — đúng như thiết kế (rendezvous chỉ tác động
 round-1). Đây vừa là **fix đo lường** vừa là **feature phân tán hợp lý** (startup barrier).
 
+Rendezvous cũng cải thiện **B2 localhost** (round-1 ~30s → **11.34s**), nhưng mức ít hơn B3 vì
+localhost 2 client boot gần như đồng thời → xác nhận rendezvous là fix tổng quát cho startup,
+tác dụng lớn nhất khi client khởi động lệch nhau nhiều (cross-machine).
+
 **Quan sát phụ — fault tolerance:** trong một lần chạy thử, client-1 (Máy 2) **chết giữa round 17**
 (pull model xong rồi treo, không submit). Server **không sập**: phát hiện `round_timeout`, thực
 hiện **partial aggregation** với client còn lại (`min_clients=1`), và hoàn thành đủ 30 round với
@@ -142,12 +146,13 @@ qua mọi cấu hình. Communication qua Ethernet 2.5GbE là **không đáng k�
 nút cổ chai thực sự là **compute + đồng bộ**, không phải mạng.
 
 **Hạn chế / lưu ý phương pháp:**
-- B1/B2 chạy trên Máy 2, B3 phối hợp cả 2 máy → so sánh compute giữa các kịch bản có
-  confound phần cứng/tải. Kết luận về communication (đo trực tiếp trên cùng link) vẫn vững.
+- Cả 3 kịch bản anchor trên Máy 1 (server/node chính), phần cứng nhất quán — đã kiểm chứng
+  Máy 1 ≈ Máy 2 (B2 steady-state 11.3s trên Máy 1 khớp 11.4s trên Máy 2; B1 accuracy trùng
+  do cùng seed). B3 client-1 chạy Máy 2 là yếu tố "remote" duy nhất — đúng bản chất thí nghiệm.
 - Để thấy lợi ích tăng tốc của phân tán, cần workload nặng hơn hoặc tách riêng node server.
 - `upload_ms` không đo được phía client trước khi gửi (chicken-egg) → comm ước lượng
   = 2×download (payload đối xứng), đủ chính xác cho phân tích tỷ lệ.
 
-**Dữ liệu thô:** `Report/data/exp_cifar_{centralized,fed_1machine,fed_2machine}/` — tái tạo hình
-bằng `python analyze_cifar.py`. B3 dùng run `m1_rv2` (có rendezvous); giữ `m1` (no-rv) để đối
-chiếu before/after ở §3.4.
+**Dữ liệu thô:** `Report/data/exp_cifar_*/` — B1 `m1`, B2 `m1_rv`, B3 `m1_rv2` (federated có
+rendezvous). Giữ run cũ (`m2`, và B3 `m1` no-rv) để đối chiếu before/after §3.4. Tái tạo hình:
+`python analyze_cifar.py`.

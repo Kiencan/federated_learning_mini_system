@@ -1,0 +1,25 @@
+{
+  "start_time": "2026-06-29T13:29:44",
+  "git_commit": "1f8fad8",
+  "config_snapshot": "results\\exp_cifar_centralized\\m1\\config.yaml",
+  "nodes": [
+    {
+      "role": "centralized_trainer",
+      "hostname": "admin",
+      "torch_version": "2.5.1+cu121",
+      "device": "cuda",
+      "cuda_available": true,
+      "gpu_name": "NVIDIA RTX 2000 Ada Generation",
+      "cuda_version": "12.1"
+    },
+    {
+      "role": "centralized_trainer",
+      "hostname": "admin",
+      "torch_version": "2.5.1+cu121",
+      "device": "cuda",
+      "cuda_available": true,
+      "gpu_name": "NVIDIA RTX 2000 Ada Generation",
+      "cuda_version": "12.1"
+    }
+  ]
+}

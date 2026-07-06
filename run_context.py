@@ -169,6 +169,14 @@ def build_cli_parser(description: str) -> argparse.ArgumentParser:
              "fallback aggregation. Server-side; overrides config.yaml wait_timeout.",
     )
     p.add_argument(
+        "--startup-timeout",
+        type=float,
+        default=None,
+        help="CIFAR: max seconds pha rendezvous chờ đủ client register trước round 1. "
+             "Server-side; overrides config.yaml startup_timeout. Tăng lên (vd 900) khi "
+             "client máy khác join chậm/không chủ động được thời điểm.",
+    )
+    p.add_argument(
         "--straggler-delay",
         type=float,
         default=None,
@@ -195,6 +203,7 @@ def cli_overrides(args: argparse.Namespace) -> dict[str, Any]:
         "data_split": args.data_split,
         "min_clients": args.min_clients,
         "wait_timeout": args.wait_timeout,
+        "startup_timeout": args.startup_timeout,
         "straggler_delay": args.straggler_delay,
     }
     return {k: v for k, v in mapping.items() if v is not None}

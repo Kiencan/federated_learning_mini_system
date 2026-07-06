@@ -1,0 +1,35 @@
+timestamp,round_id,event,client_id,message,num_samples
+2026-07-06T23:28:12,1,client_registered,client-0,,
+2026-07-06T23:28:12,1,model_pulled,client-0,bytes=44772286 state=TRAINING,
+2026-07-06T23:28:12,1,client_registered,client-1,,
+2026-07-06T23:28:12,1,model_pulled,client-1,bytes=44772286 state=TRAINING,
+2026-07-06T23:28:12,1,rendezvous_done,,registered=2/2,
+2026-07-06T23:29:24,1,update_received,client-1,,25000
+2026-07-06T23:29:24,1,update_received,client-0,,25000
+2026-07-06T23:29:24,1,aggregation_start,,clients=2,
+2026-07-06T23:29:25,1,aggregation_done,,duration_ms=16.9,
+2026-07-06T23:29:25,2,round_done,,advancing_to_round=2,
+2026-07-06T23:29:25,2,model_pulled,client-1,bytes=44772286 state=TRAINING,
+2026-07-06T23:29:25,2,model_pulled,client-0,bytes=44772286 state=TRAINING,
+2026-07-06T23:29:39,2,evaluation_done,,round=1 accuracy=0.1180,
+2026-07-06T23:30:37,2,update_received,client-1,,25000
+2026-07-06T23:30:38,2,update_received,client-0,,25000
+2026-07-06T23:30:38,2,aggregation_start,,clients=2,
+2026-07-06T23:30:38,2,aggregation_done,,duration_ms=21.8,
+2026-07-06T23:30:38,3,round_done,,advancing_to_round=3,
+2026-07-06T23:30:39,3,model_pulled,client-1,bytes=44772286 state=TRAINING,
+2026-07-06T23:30:39,3,model_pulled,client-0,bytes=44772286 state=TRAINING,
+2026-07-06T23:30:54,3,evaluation_done,,round=2 accuracy=0.4626,
+2026-07-06T23:31:52,3,update_received,client-1,,25000
+2026-07-06T23:31:53,3,update_received,client-0,,25000
+2026-07-06T23:31:53,3,aggregation_start,,clients=2,
+2026-07-06T23:31:53,3,aggregation_done,,duration_ms=22.2,
+2026-07-06T23:31:53,4,round_done,,advancing_to_round=4,
+2026-07-06T23:31:54,4,model_pulled,client-1,bytes=44772286 state=TRAINING,
+2026-07-06T23:31:54,4,model_pulled,client-0,bytes=44772286 state=TRAINING,
+2026-07-06T23:32:09,4,evaluation_done,,round=3 accuracy=0.7495,
+2026-07-06T23:33:07,4,update_received,client-1,,25000
+2026-07-06T23:33:08,4,update_received,client-0,,25000
+2026-07-06T23:33:08,4,aggregation_start,,clients=2,
+2026-07-06T23:33:08,4,aggregation_done,,duration_ms=20.1,
+2026-07-06T23:33:08,4,round_done,,final state DONE,

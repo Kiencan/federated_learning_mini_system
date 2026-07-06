@@ -140,6 +140,7 @@ mất 1 node), dù bản chạy đó không dùng cho benchmark vì 14/30 round 
 | **Fault tolerance** | Client chết giữa run → server partial-aggregate, hoàn thành 30 round không sập |
 | **Tối ưu overhead** | Eval off critical path + poll 0.5s → B3 round 14.5s→10.7s (26%) (§5) |
 | **Cân bằng tải** | Shard 45/55 (node kiêm server ít data hơn) → B3 10.7s→9.8s ≈ B2 9.7s; chênh phân tán 3.2s→0.1s (§5) |
+| **Scale-up (khi nào phân tán thắng)** | Model nặng (ResNet-18) → GPU saturate → B3 thắng B2 **1.99×**; lợi ích phân tán tỷ lệ compute (§6) |
 
 ## 5. Tối ưu tăng tốc (opt-A + opt-B) — triệt tiêu chi phí phân tán
 
@@ -202,7 +203,44 @@ Với workload nhẹ + link nhanh, sau khi cắt overhead điều phối và câ
 **ngang bằng** 1 máy. Communication (0.3%) chưa bao giờ là nút cổ chai — các nút thực là **eval
 trên critical path, poll latency, và load imbalance**, đều xử lý được mà không đụng tới mạng.
 
-## 6. Kết luận & hạn chế
+## 6. Khi nào phân tán THẮNG — scale-up compute intensity
+
+§5 cho thấy với model nhẹ (CifarCNN 620K), phân tán chỉ **ngang bằng** 1 máy. Câu hỏi: **khi nào
+phân tán thực sự nhanh hơn?** Giả thuyết: khi compute đủ nặng để **1 client saturate GPU**, thì
+2 client trên 1 GPU (B2) phải serialize, còn 2 GPU riêng (B3) chạy song song → B3 thắng.
+
+**Thí nghiệm:** đổi sang model nặng **ResNet-18** (11.17M params, gấp 18× CifarCNN; payload
+**42.7 MB** so với 2.4 MB). CLI `--model resnet`. (Phải bump gRPC message limit 16→128MB.)
+
+**Đo GPU contention (localhost, ResNet, 25k mẫu/client):**
+
+| | Train time/round |
+|---|:---:|
+| T1 — 1 client (full GPU) | 34.1s |
+| T2 — 2 client (chung 1 GPU) | 71.9s |
+| **Contention factor T2/T1** | **2.11×** |
+
+→ Với ResNet, GPU bị saturate: 2 client chung 1 GPU **serialize gần hoàn toàn** (2.11×), khác hẳn
+CifarCNN nhẹ (2 client chạy chồng lấn gần như miễn phí).
+
+**Kết quả 2 máy thật (ResNet):**
+
+| | Round | Cơ chế |
+|---|:---:|---|
+| B2 (1 máy, 2 client/1 GPU) | 73.6s | serialize |
+| **B3 (2 máy, 2 GPU song song)** | **37.0s** | song song |
+| **→ Phân tán nhanh hơn** | **1.99×** | |
+
+→ B3 mỗi client chạy trên GPU riêng (Máy1 36.4s, Máy2 29.7s, round gate bởi Máy1), khớp T1 solo.
+Communication (payload 42.7MB) là 390ms/round = **~1% round** — kể cả model gấp 18×, **mạng vẫn
+không phải nút cổ chai** trên link 2.5GbE.
+
+**Kết luận scale-up:** **lợi ích phân tán tỷ lệ với độ nặng compute.** Workload nhẹ → 1 GPU gánh
+2 client thoải mái → phân tán ngang bằng (§5). Workload nặng → 1 GPU serialize → phân tán 2 máy
+**tăng tốc gần tuyến tính (~2× với 2 máy)**. Đây là lý do FL/phân tán đáng giá khi model/dữ liệu
+đủ lớn — đúng bối cảnh thực tế (model production lớn hơn nhiều CifarCNN).
+
+## 7. Kết luận & hạn chế
 
 **Kết luận:** Mở rộng CIFAR-10 + model lớn hơn chạy tốt trên hệ 2 máy. Accuracy ~81.5% ổn định
 qua mọi cấu hình. Communication qua Ethernet 2.5GbE là **không đáng kể** với model cỡ này —
@@ -210,6 +248,8 @@ nút cổ chai thực sự là **compute + đồng bộ**, không phải mạng.
 + poll) và opt-B (cân bằng shard), chi phí phân tán **triệt tiêu** (chênh 3.2s → 0.1s): phân tán
 2 máy ngang bằng 1 máy. Các nút cổ chai thực (eval on-path, poll, load imbalance) đều xử lý được
 mà không đụng tới mạng — khẳng định communication chưa bao giờ là giới hạn với workload/link này.
+Và khi **scale-up compute** (ResNet-18, §6), phân tán 2 máy **thắng rõ 1.99×** vì 1 GPU serialize
+2 client còn 2 GPU song song → **lợi ích phân tán tỷ lệ với độ nặng compute** (mạng vẫn ~1%).
 
 **Hạn chế / lưu ý phương pháp:**
 - Cả 3 kịch bản anchor trên Máy 1 (server/node chính), phần cứng nhất quán — đã kiểm chứng
@@ -227,6 +267,7 @@ c0_train > c1_train ở mọi run B3.
 - Baseline (rendezvous, §2-4): B1 `m1`, B2 `m1_rv`, B3 `m1_rv2`.
 - Opt-A (§5): B2 `m1_opt`, B3 `m1_opt5`.
 - Opt-B (§5): B3 `m1_optB` (shard 45/55; 28/30 round đủ 2 client, đo steady-state trên round sạch).
+- Scale-up (§6): `exp_cifar_heavy_*` — solo `s2` (T1), 1máy `b2b` (B2), 2máy `m1_heavy` (B3), ResNet.
 - Run cũ giữ đối chiếu: B1/B2 `m2`, B3 `m1` (no-rv).
 
 Tái tạo hình baseline: `python analyze_cifar.py`.

@@ -1,0 +1,27 @@
+timestamp,round_id,event,client_id,message,num_samples
+2026-07-06T23:25:50,1,client_registered,client-0,,
+2026-07-06T23:25:50,1,model_pulled,client-0,bytes=44772286 state=TRAINING,
+2026-07-06T23:25:55,1,rendezvous_timeout,,registered=1/2,
+2026-07-06T23:25:55,1,rendezvous_done,,registered=1/2,
+2026-07-06T23:26:24,1,update_received,client-0,,25000
+2026-07-06T23:26:35,1,round_timeout,,received=1/2,
+2026-07-06T23:26:35,1,partial_aggregation,,received=1/2,
+2026-07-06T23:26:35,1,aggregation_start,,clients=1,
+2026-07-06T23:26:35,1,aggregation_done,,duration_ms=12.1,
+2026-07-06T23:26:35,2,round_done,,advancing_to_round=2,
+2026-07-06T23:26:36,2,model_pulled,client-0,bytes=44772286 state=TRAINING,
+2026-07-06T23:26:50,2,evaluation_done,,round=1 accuracy=0.6426,
+2026-07-06T23:27:11,2,update_received,client-0,,25000
+2026-07-06T23:27:15,2,round_timeout,,received=1/2,
+2026-07-06T23:27:15,2,partial_aggregation,,received=1/2,
+2026-07-06T23:27:15,2,aggregation_start,,clients=1,
+2026-07-06T23:27:15,2,aggregation_done,,duration_ms=7.3,
+2026-07-06T23:27:15,3,round_done,,advancing_to_round=3,
+2026-07-06T23:27:16,3,model_pulled,client-0,bytes=44772286 state=TRAINING,
+2026-07-06T23:27:30,3,evaluation_done,,round=2 accuracy=0.6825,
+2026-07-06T23:27:51,3,update_received,client-0,,25000
+2026-07-06T23:27:55,3,round_timeout,,received=1/2,
+2026-07-06T23:27:55,3,partial_aggregation,,received=1/2,
+2026-07-06T23:27:55,3,aggregation_start,,clients=1,
+2026-07-06T23:27:55,3,aggregation_done,,duration_ms=8.5,
+2026-07-06T23:27:55,3,round_done,,final state DONE,

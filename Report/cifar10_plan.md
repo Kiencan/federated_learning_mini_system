@@ -86,6 +86,8 @@ Phân tích communication overhead chiếm bao nhiêu % round time khi scale ra 
 - [x] **Rendezvous barrier**: fix đo round-1 (89.6s → 10.96s), chạy lại B3 sạch (run `m1_rv2`)
 - [x] **opt-A tăng tốc**: eval off critical path + poll 0.5s → B3 round 14.5s→10.7s (26%),
       chênh phân tán giảm 72% (3.2s→0.9s). Runs `m1_opt` (B2), `m1_opt5` (B3).
+- [x] **opt-B cân bằng shard**: `--shard-weights 0.45,0.55` (Máy 1 ít data hơn) → B3 10.7s→9.8s
+      ≈ B2 9.7s. Chênh phân tán 3.2s→0.1s (triệt tiêu). Run `m1_optB`.
 - [x] Viết báo cáo so sánh: [bao_cao_cifar10.md](bao_cao_cifar10.md)
 
 **Kết quả cuối** (bộ 3 anchor Máy 1, federated có rendezvous): B1 80.26% · B2 81.97% · B3 81.73%

@@ -138,9 +138,10 @@ mất 1 node), dù bản chạy đó không dùng cho benchmark vì 14/30 round 
 | **Load imbalance** | Node kiêm server bị chậm hơn (10.4 vs 7.9s) → nên tách server khỏi node train |
 | **Startup rendezvous** | Chờ đủ client trước khi đếm round-1 → loại boot time (89.6s → 10.96s) |
 | **Fault tolerance** | Client chết giữa run → server partial-aggregate, hoàn thành 30 round không sập |
-| **Tối ưu overhead** | Eval off critical path + poll 0.5s → B3 round 14.5s→10.7s (26%), chênh phân tán giảm 72% (§5) |
+| **Tối ưu overhead** | Eval off critical path + poll 0.5s → B3 round 14.5s→10.7s (26%) (§5) |
+| **Cân bằng tải** | Shard 45/55 (node kiêm server ít data hơn) → B3 10.7s→9.8s ≈ B2 9.7s; chênh phân tán 3.2s→0.1s (§5) |
 
-## 5. Tối ưu tăng tốc (opt-A) — thu hẹp chi phí phân tán
+## 5. Tối ưu tăng tốc (opt-A + opt-B) — triệt tiêu chi phí phân tán
 
 Phân rã 1 round B3 (14.5s) cho thấy 2 overhead **không phải communication**:
 
@@ -173,19 +174,42 @@ Phân rã 1 round B3 (14.5s) cho thấy 2 overhead **không phải communication
   — **giảm 72%**. Communication vẫn không đổi (vẫn 0.3%), nên toàn bộ cải thiện đến từ cắt overhead
   điều phối, không phải mạng.
 - **Phần dư 0.9s = mất cân bằng tải:** B3 vẫn bị gate bởi Máy 1 straggler (c0_train ~10.1s vs Máy 2
-  ~8.2s, do Máy 1 kiêm server). Muốn phân tán thắng hẳn cần **opt-B: cân bằng shard** (cấp Máy 1
-  ít dữ liệu hơn để 2 client về đích cùng lúc; FedAvg weighted nên accuracy giữ nguyên).
+  ~8.2s, do Máy 1 kiêm server) → xử lý bằng opt-B dưới đây.
 
-→ **Kết luận opt:** với workload nhẹ + link nhanh, sau khi cắt overhead điều phối (eval off-path +
-poll), phân tán 2 máy **gần bằng** 1 máy (chênh 0.9s); nút cổ chai cuối cùng là **load balancing**,
-không phải communication.
+**opt-B — cân bằng shard theo tốc độ node.** Cấp Máy 1 (kiêm server, chậm hơn) **shard nhỏ hơn**
+để 2 client về đích cùng lúc. Ước lượng tỷ lệ từ rate: Máy 1 25k/10.1s vs Máy 2 25k/8.2s →
+**45/55** (Máy 1 22.500 mẫu, Máy 2 27.500). FedAvg weighted theo `num_samples` nên **accuracy giữ
+nguyên** (81.62%). CLI `--shard-weights 0.45,0.55` (giống nhau mọi client).
+
+| Kịch bản | Steady/round | c0_train (Máy1) | c1_train (Máy2) | Chênh train |
+|----------|:---:|:---:|:---:|:---:|
+| B3 opt-A (đều 50/50) | 10.7s | 10.1s | 8.2s | 1.86s |
+| **B3 opt-A+B (45/55)** | **9.8s** | 7.5s | 8.7s | **1.21s** |
+| B2 opt-A (1 máy) | 9.7s | — | — | — |
+
+→ Round giảm tiếp **10.7s → 9.8s**, imbalance train giảm 1.86s→1.21s. **B3 (9.8s) ≈ B2 (9.7s)** —
+phân tán 2 máy giờ **ngang bằng** 1 máy (chênh 0.1s trong nhiễu run-to-run).
+
+→ **Kết luận opt — hành trình triệt tiêu chi phí phân tán:**
+
+| | B3−B2 gap | Nút cổ chai xử lý |
+|---|:---:|---|
+| Baseline (rendezvous) | 3.2s | — |
+| + opt-A (eval off-path + poll) | 0.9s | overhead điều phối |
+| + opt-B (cân bằng shard) | ~0.1s | mất cân bằng tải |
+
+Với workload nhẹ + link nhanh, sau khi cắt overhead điều phối và cân bằng tải, phân tán 2 máy
+**ngang bằng** 1 máy. Communication (0.3%) chưa bao giờ là nút cổ chai — các nút thực là **eval
+trên critical path, poll latency, và load imbalance**, đều xử lý được mà không đụng tới mạng.
 
 ## 6. Kết luận & hạn chế
 
 **Kết luận:** Mở rộng CIFAR-10 + model lớn hơn chạy tốt trên hệ 2 máy. Accuracy ~81.5% ổn định
 qua mọi cấu hình. Communication qua Ethernet 2.5GbE là **không đáng kể** với model cỡ này —
 nút cổ chai thực sự là **compute + đồng bộ**, không phải mạng. Sau opt-A (eval off critical path
-+ poll), chi phí phân tán giảm 72% (chênh 3.2s → 0.9s), phần dư là mất cân bằng tải.
++ poll) và opt-B (cân bằng shard), chi phí phân tán **triệt tiêu** (chênh 3.2s → 0.1s): phân tán
+2 máy ngang bằng 1 máy. Các nút cổ chai thực (eval on-path, poll, load imbalance) đều xử lý được
+mà không đụng tới mạng — khẳng định communication chưa bao giờ là giới hạn với workload/link này.
 
 **Hạn chế / lưu ý phương pháp:**
 - Cả 3 kịch bản anchor trên Máy 1 (server/node chính), phần cứng nhất quán — đã kiểm chứng
@@ -202,6 +226,7 @@ c0_train > c1_train ở mọi run B3.
 **Dữ liệu thô:** `Report/data/exp_cifar_*/`:
 - Baseline (rendezvous, §2-4): B1 `m1`, B2 `m1_rv`, B3 `m1_rv2`.
 - Opt-A (§5): B2 `m1_opt`, B3 `m1_opt5`.
+- Opt-B (§5): B3 `m1_optB` (shard 45/55; 28/30 round đủ 2 client, đo steady-state trên round sạch).
 - Run cũ giữ đối chiếu: B1/B2 `m2`, B3 `m1` (no-rv).
 
 Tái tạo hình baseline: `python analyze_cifar.py`.

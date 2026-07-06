@@ -1,0 +1,34 @@
+{
+  "start_time": "2026-07-06T22:40:25",
+  "git_commit": "447368e",
+  "config_snapshot": "results\\exp_cifar_fed_2machine\\m1_optB\\config.yaml",
+  "nodes": [
+    {
+      "role": "server",
+      "hostname": "admin",
+      "torch_version": "2.5.1+cu121",
+      "device": "cuda",
+      "cuda_available": true,
+      "gpu_name": "NVIDIA RTX 2000 Ada Generation",
+      "cuda_version": "12.1"
+    },
+    {
+      "role": "client/client-0",
+      "hostname": "admin",
+      "torch_version": "2.5.1+cu121",
+      "device": "cuda",
+      "cuda_available": true,
+      "gpu_name": "NVIDIA RTX 2000 Ada Generation",
+      "cuda_version": "12.1"
+    },
+    {
+      "role": "client/client-1",
+      "hostname": "ADMIN",
+      "torch_version": "2.6.0+cu124",
+      "device": "cuda",
+      "cuda_available": true,
+      "gpu_name": "NVIDIA RTX 2000 Ada Generation",
+      "cuda_version": "12.4"
+    }
+  ]
+}

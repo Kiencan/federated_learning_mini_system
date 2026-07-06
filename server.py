@@ -324,28 +324,58 @@ def _rendezvous_wait_for_clients(state: ServerState) -> None:
     Bounded bởi startup_timeout: nếu 1 client không lên (vd crash/máy tắt), sau
     timeout vẫn tiếp tục với số client hiện có (đúng ngữ nghĩa min_clients).
     """
+    print(
+        f"[server] RENDEZVOUS: ĐỨNG IM ở round 0, chờ đủ {state.expected_count} client "
+        f"register (tối đa {state.startup_timeout:.0f}s) trước khi bắt đầu round 1...",
+        flush=True,
+    )
     with state.condition:
-        deadline = time.time() + state.startup_timeout
+        start = time.time()
+        deadline = start + state.startup_timeout
+        last_n = -1
+        last_beat = start
         while not state.shutdown and len(state._seen_clients) < state.expected_count:
-            remaining = deadline - time.time()
+            n = len(state._seen_clients)
+            now = time.time()
+            if n != last_n:
+                print(
+                    f"[server] RENDEZVOUS: {n}/{state.expected_count} registered "
+                    f"{sorted(state._seen_clients)} — CHỜ TIẾP (chưa start round 1)...",
+                    flush=True,
+                )
+                last_n, last_beat = n, now
+            elif now - last_beat >= 10:
+                print(
+                    f"[server] RENDEZVOUS: vẫn chờ {n}/{state.expected_count} "
+                    f"({now - start:.0f}s / {state.startup_timeout:.0f}s)...",
+                    flush=True,
+                )
+                last_beat = now
+            remaining = deadline - now
             if remaining <= 0:
                 state.log_event(
                     "rendezvous_timeout",
                     message=f"registered={len(state._seen_clients)}/{state.expected_count}",
                 )
+                print(
+                    f"[server] ⚠ RENDEZVOUS TIMEOUT sau {state.startup_timeout:.0f}s — "
+                    f"chỉ {len(state._seen_clients)}/{state.expected_count} client, chạy với client hiện có",
+                    flush=True,
+                )
                 break
-            state.condition.wait(timeout=remaining)
+            state.condition.wait(timeout=min(remaining, 5.0))  # wake ≤5s để in heartbeat
         if state.shutdown:
             return
         # Reset đồng hồ round 1: từ đây mới tính, sau khi client đã sẵn sàng
         state.round_start_time = time.time()
+        n_final = len(state._seen_clients)
         state.log_event(
             "rendezvous_done",
-            message=f"registered={len(state._seen_clients)}/{state.expected_count}",
+            message=f"registered={n_final}/{state.expected_count}",
         )
     print(
-        f"[server] rendezvous done: "
-        f"{len(state._seen_clients)}/{state.expected_count} clients registered"
+        f"[server] ✓ RENDEZVOUS DONE: {n_final}/{state.expected_count} client — bắt đầu round 1",
+        flush=True,
     )
 
 

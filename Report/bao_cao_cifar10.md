@@ -138,12 +138,54 @@ mất 1 node), dù bản chạy đó không dùng cho benchmark vì 14/30 round 
 | **Load imbalance** | Node kiêm server bị chậm hơn (10.4 vs 7.9s) → nên tách server khỏi node train |
 | **Startup rendezvous** | Chờ đủ client trước khi đếm round-1 → loại boot time (89.6s → 10.96s) |
 | **Fault tolerance** | Client chết giữa run → server partial-aggregate, hoàn thành 30 round không sập |
+| **Tối ưu overhead** | Eval off critical path + poll 0.5s → B3 round 14.5s→10.7s (26%), chênh phân tán giảm 72% (§5) |
 
-## 5. Kết luận & hạn chế
+## 5. Tối ưu tăng tốc (opt-A) — thu hẹp chi phí phân tán
+
+Phân rã 1 round B3 (14.5s) cho thấy 2 overhead **không phải communication**:
+
+| Thành phần | Thời gian | |
+|-----------|:---------:|---|
+| Client chậm nhất train (Máy 1 c0) | ~10.4s | compute (mất cân bằng) |
+| **Eval trên critical path** | **~2.9s** | ⚠️ client phải chờ server eval xong mới pull model round sau |
+| Poll latency (`POLL_INTERVAL=2s`) | ~1.1s | client chờ mới phát hiện round mới |
+| Aggregation + download | <0.03s | không đáng kể |
+
+**opt-A (2 fix rẻ, không đổi kiến trúc):**
+1. **Đưa eval RA KHỎI critical path**: server 4-phase — aggregate → commit + **advance round NGAY**
+   (client được giải phóng pull model + train round sau) → **eval + log ở Phase 4 chạy nền song song**
+   round sau (eval trên temp model, không chạm `state.model`). Bỏ ~2.9s khỏi latency mỗi round.
+2. **Giảm `POLL_INTERVAL_SEC` 2.0 → 0.5**: client phát hiện round mới nhanh hơn.
+
+**Kết quả (before/after, cùng phần cứng + rendezvous):**
+
+| Kịch bản | Steady/round | Tổng | opt-A tiết kiệm |
+|----------|:---:|:---:|:---:|
+| B2 localhost — no-opt | 11.3s | 340s | — |
+| **B2 localhost — opt-A** | **9.7s** | **291s** | −1.6s/round |
+| B3 2 máy — no-opt | 14.5s | 431s | — |
+| **B3 2 máy — opt-A** | **10.7s** | **317s** | −3.8s/round (**26%**) |
+
+**Phân tích trung thực:**
+- opt-A tăng tốc **cả hai** cấu hình; B3 hưởng lợi nhiều hơn (−3.8s) vì eval nằm trọn trên
+  critical path của round, còn localhost eval chồng lấn compute ít hơn.
+- **Khoảng cách phân tán thu hẹp mạnh:** chênh B3−B2 từ **3.2s** (14.5−11.3) xuống **0.9s** (10.7−9.7)
+  — **giảm 72%**. Communication vẫn không đổi (vẫn 0.3%), nên toàn bộ cải thiện đến từ cắt overhead
+  điều phối, không phải mạng.
+- **Phần dư 0.9s = mất cân bằng tải:** B3 vẫn bị gate bởi Máy 1 straggler (c0_train ~10.1s vs Máy 2
+  ~8.2s, do Máy 1 kiêm server). Muốn phân tán thắng hẳn cần **opt-B: cân bằng shard** (cấp Máy 1
+  ít dữ liệu hơn để 2 client về đích cùng lúc; FedAvg weighted nên accuracy giữ nguyên).
+
+→ **Kết luận opt:** với workload nhẹ + link nhanh, sau khi cắt overhead điều phối (eval off-path +
+poll), phân tán 2 máy **gần bằng** 1 máy (chênh 0.9s); nút cổ chai cuối cùng là **load balancing**,
+không phải communication.
+
+## 6. Kết luận & hạn chế
 
 **Kết luận:** Mở rộng CIFAR-10 + model lớn hơn chạy tốt trên hệ 2 máy. Accuracy ~81.5% ổn định
 qua mọi cấu hình. Communication qua Ethernet 2.5GbE là **không đáng kể** với model cỡ này —
-nút cổ chai thực sự là **compute + đồng bộ**, không phải mạng.
+nút cổ chai thực sự là **compute + đồng bộ**, không phải mạng. Sau opt-A (eval off critical path
++ poll), chi phí phân tán giảm 72% (chênh 3.2s → 0.9s), phần dư là mất cân bằng tải.
 
 **Hạn chế / lưu ý phương pháp:**
 - Cả 3 kịch bản anchor trên Máy 1 (server/node chính), phần cứng nhất quán — đã kiểm chứng
@@ -153,6 +195,13 @@ nút cổ chai thực sự là **compute + đồng bộ**, không phải mạng.
 - `upload_ms` không đo được phía client trước khi gửi (chicken-egg) → comm ước lượng
   = 2×download (payload đối xứng), đủ chính xác cho phân tích tỷ lệ.
 
-**Dữ liệu thô:** `Report/data/exp_cifar_*/` — B1 `m1`, B2 `m1_rv`, B3 `m1_rv2` (federated có
-rendezvous). Giữ run cũ (`m2`, và B3 `m1` no-rv) để đối chiếu before/after §3.4. Tái tạo hình:
-`python analyze_cifar.py`.
+**Hạn chế bổ sung (§5):** so sánh opt dùng B2/B3 optimized chạy ở các thời điểm khác nhau; train
+time có nhiễu run-to-run (~±0.5s). Kết luận "chênh 0.9s do straggler" vững vì lặp lại pattern
+c0_train > c1_train ở mọi run B3.
+
+**Dữ liệu thô:** `Report/data/exp_cifar_*/`:
+- Baseline (rendezvous, §2-4): B1 `m1`, B2 `m1_rv`, B3 `m1_rv2`.
+- Opt-A (§5): B2 `m1_opt`, B3 `m1_opt5`.
+- Run cũ giữ đối chiếu: B1/B2 `m2`, B3 `m1` (no-rv).
+
+Tái tạo hình baseline: `python analyze_cifar.py`.

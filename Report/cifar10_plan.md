@@ -84,6 +84,8 @@ Phân tích communication overhead chiếm bao nhiêu % round time khi scale ra 
 - [x] Đo throughput thô link Ethernet: **2.36 Gbps** (`tools/throughput_test.py`, 1GB)
 - [x] Sinh 3 hình so sánh (`analyze_cifar.py` → `Report/figures/cifar_*.png`)
 - [x] **Rendezvous barrier**: fix đo round-1 (89.6s → 10.96s), chạy lại B3 sạch (run `m1_rv2`)
+- [x] **opt-A tăng tốc**: eval off critical path + poll 0.5s → B3 round 14.5s→10.7s (26%),
+      chênh phân tán giảm 72% (3.2s→0.9s). Runs `m1_opt` (B2), `m1_opt5` (B3).
 - [x] Viết báo cáo so sánh: [bao_cao_cifar10.md](bao_cao_cifar10.md)
 
 **Kết quả cuối** (bộ 3 anchor Máy 1, federated có rendezvous): B1 80.26% · B2 81.97% · B3 81.73%

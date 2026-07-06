@@ -275,8 +275,16 @@ def run_federated(args, cfg: dict, server_addr: str) -> None:
         shards = partition_noniid_pathological(train_set, num_clients=2)
         print(f"[client {client_id}] split=noniid (pathological)")
     elif data_split == "iid":
-        shards = partition_iid(train_set, num_clients=args.num_shards, seed=cfg["seed"])
-        print(f"[client {client_id}] split=iid (num_shards={args.num_shards})")
+        weights = None
+        if getattr(args, "shard_weights", None):
+            weights = [float(x) for x in args.shard_weights.split(",")]
+        shards = partition_iid(
+            train_set, num_clients=args.num_shards, seed=cfg["seed"], weights=weights
+        )
+        print(
+            f"[client {client_id}] split=iid (num_shards={args.num_shards}"
+            f"{f', weights={weights}' if weights else ', đều'})"
+        )
     else:
         print(
             f"[client {client_id}] ERROR: unknown data_split={data_split!r}, "
@@ -458,6 +466,12 @@ def main() -> None:
         type=int,
         default=2,
         help="tong so shards = so client (default=2)",
+    )
+    parser.add_argument(
+        "--shard-weights",
+        default=None,
+        help="opt-B: ty le chia shard IID, vd '0.45,0.55' (Máy 1 ít hơn để cân bằng "
+             "tải với node kiêm server). Bỏ trống = chia đều. Phải giống nhau mọi client.",
     )
     args = parser.parse_args()
 

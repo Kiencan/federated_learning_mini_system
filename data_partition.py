@@ -76,12 +76,31 @@ def make_loader(dataset, batch_size: int, shuffle: bool, num_workers: int = 0) -
     )
 
 
-def partition_iid(train: Dataset, num_clients: int, seed: int = 42) -> List[Subset]:
-    """Chia ngẫu nhiên đều — mỗi client có phân phối tương tự full set."""
+def partition_iid(
+    train: Dataset, num_clients: int, seed: int = 42, weights=None
+) -> List[Subset]:
+    """Chia ngẫu nhiên — mỗi client có phân phối tương tự full set.
+
+    weights=None → chia đều (np.array_split). weights=[w0,w1,...] → chia theo tỷ lệ
+    (opt-B cân bằng tải: cấp node chậm/kiêm server shard nhỏ hơn để 2 client về đích
+    cùng lúc). FedAvg weighted theo num_samples nên accuracy giữ nguyên dù shard lệch.
+    Weights phải giống nhau trên mọi client (cùng seed → cùng cách chia, mỗi client
+    lấy shard_id của mình).
+    """
     rng = np.random.default_rng(seed)
     indices = np.arange(len(train))
     rng.shuffle(indices)
-    splits = np.array_split(indices, num_clients)
+    if weights is None:
+        splits = np.array_split(indices, num_clients)
+    else:
+        if len(weights) != num_clients:
+            raise ValueError(
+                f"shard_weights phải có {num_clients} phần tử, got {len(weights)}"
+            )
+        w = np.asarray(weights, dtype=float)
+        w = w / w.sum()  # normalize về tổng 1
+        boundaries = (np.cumsum(w)[:-1] * len(indices)).astype(int)
+        splits = np.split(indices, boundaries)
     return [Subset(train, idx.tolist()) for idx in splits]
 
 

@@ -164,7 +164,7 @@ def do_one_round(
     )
 
     # Buoc 2: Tao model MOI tu global weights + optimizer MOI (moi round)
-    model = build_model(cfg.get("dataset", "mnist"))
+    model = build_model(cfg.get("dataset", "mnist"), arch=cfg.get("model", "cnn"))
     load_state_dict_from_bytes(model, model_resp.serialized_state_dict)
     model.to(device)
     optimizer = torch.optim.SGD(

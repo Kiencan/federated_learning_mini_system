@@ -139,6 +139,14 @@ def build_cli_parser(description: str) -> argparse.ArgumentParser:
         help="dataset + kiến trúc model (override config.yaml dataset). "
              "mnist=MnistCNN 1×28×28, cifar10=CifarCNN 3×32×32.",
     )
+    p.add_argument(
+        "--model",
+        choices=["cnn", "resnet"],
+        default=None,
+        help="kiến trúc model (override config.yaml model). cnn=nhẹ (mặc định), "
+             "resnet=ResNet-18 nặng cho thí nghiệm scale-up (chỉ cifar10). "
+             "Phải giống nhau server + mọi client.",
+    )
     p.add_argument("--num-rounds", type=int, default=None)
     p.add_argument("--local-epochs", type=int, default=None)
     p.add_argument("--batch-size", type=int, default=None)
@@ -192,6 +200,7 @@ def cli_overrides(args: argparse.Namespace) -> dict[str, Any]:
     """Map CLI args → config keys (chỉ những giá trị không phải None)."""
     mapping = {
         "dataset": args.dataset,
+        "model": args.model,
         "num_rounds": args.num_rounds,
         "local_epochs": args.local_epochs,
         "batch_size": args.batch_size,

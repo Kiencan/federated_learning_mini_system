@@ -5,6 +5,8 @@
 # Dataset
 dataset: "mnist"          # mnist | cifar10 — chọn data + kiến trúc model (build_model)
                           # Override --dataset cifar10 cho thí nghiệm mở rộng
+model: "cnn"              # cnn (nhẹ) | resnet (ResNet-18 nặng, chỉ cifar10) — cho scale-up
+                          # Override --model resnet để test GPU contention (phương án C)
 
 # Training
 num_rounds: 30            # số round federated; centralized dùng làm num_epochs

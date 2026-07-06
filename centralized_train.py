@@ -66,7 +66,7 @@ def main() -> None:
     train_loader = make_loader(train_set, cfg["batch_size"], shuffle=True)
     test_loader = make_loader(test_set, cfg["batch_size"] * 4, shuffle=False)
 
-    model = build_model(dataset).to(device)
+    model = build_model(dataset, arch=cfg.get("model", "cnn")).to(device)
     optimizer = optim.SGD(model.parameters(), lr=cfg["lr"], momentum=0.9)
 
     log_path = ctx.run_dir / "round_log.csv"

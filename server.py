@@ -73,12 +73,12 @@ def _do_fedavg(updates_snapshot):
     return new_state_dict, agg_ms
 
 
-def _do_evaluate(state_dict, test_loader, device, dataset):
+def _do_evaluate(state_dict, test_loader, device, dataset, arch):
     """Eval state_dict trên test loader (temp model — KHÔNG chạm s.model).
 
     Returns (test_loss, accuracy, per_class, eval_ms).
     """
-    temp_model = build_model(dataset)
+    temp_model = build_model(dataset, arch=arch)
     temp_model.load_state_dict(state_dict)
     t0 = time.perf_counter()
     test_loss, accuracy, per_class = evaluate(temp_model, test_loader, device)
@@ -131,9 +131,10 @@ class ServerState:
         self.condition = threading.Condition(self.lock)  # M6: aggregation thread signal
         self.shutdown = False                    # M6: graceful exit flag
 
-        # Global model — kiến trúc theo dataset (mnist=MnistCNN, cifar10=CifarCNN)
+        # Global model — kiến trúc theo dataset + arch (cnn|resnet)
         self.dataset = cfg.get("dataset", "mnist")
-        self.model = build_model(self.dataset)
+        self.arch = cfg.get("model", "cnn")
+        self.model = build_model(self.dataset, arch=self.arch)
         self.eval_device = "cpu"
 
         # Round state
@@ -472,7 +473,7 @@ def run_aggregation_loop(state: ServerState) -> None:
         # Eval trên state_dict của round vừa xong (temp model, không chạm state.model),
         # nên an toàn khi round sau đang chạy. train round sau (~8-10s) >> eval (~3s).
         test_loss, accuracy, per_class, eval_ms = _do_evaluate(
-            new_state_dict, state.test_loader, state.eval_device, state.dataset
+            new_state_dict, state.test_loader, state.eval_device, state.dataset, state.arch
         )
         _write_round_log_row(
             state, round_id, updates_snapshot, accuracy, test_loss,

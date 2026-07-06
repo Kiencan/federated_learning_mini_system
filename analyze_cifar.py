@@ -49,10 +49,11 @@ FIG_DIR = REPO / "Report" / "figures"
 DEFAULT_DATA_ROOT = REPO / "Report" / "data"
 
 # Đường dẫn tương đối dưới data_root (giữ cấu trúc results/ gốc).
-# run_id mặc định m2 (B1/B2 chạy Máy 2) / m1 (B3 server ở Máy 1).
+# run_id mặc định m2 (B1/B2 chạy Máy 2) / m1_rv2 (B3 server Máy 1, có rendezvous).
+# B3 dùng run rendezvous (round-1 sạch); B3 cũ "m1" (no-rv) giữ lại để đối chiếu before/after.
 REL_B1 = Path("exp_cifar_centralized") / "m2"
 REL_B2 = Path("exp_cifar_fed_1machine") / "m2"
-REL_B3 = Path("exp_cifar_fed_2machine") / "m1"
+REL_B3 = Path("exp_cifar_fed_2machine") / "m1_rv2"
 
 ACC_CLASS_COLS = [f"acc_class_{i}" for i in range(10)]
 CLIENT_IDS = (0, 1)

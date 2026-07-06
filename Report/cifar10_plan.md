@@ -83,8 +83,11 @@ Phân tích communication overhead chiếm bao nhiêu % round time khi scale ra 
 - [x] Chạy benchmark B1/B2/B3 trên 2 máy (30 round mỗi bộ, data ở `Report/data/`)
 - [x] Đo throughput thô link Ethernet: **2.36 Gbps** (`tools/throughput_test.py`, 1GB)
 - [x] Sinh 3 hình so sánh (`analyze_cifar.py` → `Report/figures/cifar_*.png`)
+- [x] **Rendezvous barrier**: fix đo round-1 (89.6s → 10.96s), chạy lại B3 sạch (run `m1_rv2`)
 - [x] Viết báo cáo so sánh: [bao_cao_cifar10.md](bao_cao_cifar10.md)
 
-**Kết quả cuối:** B1 80.26% · B2 81.59% · B3 81.51% accuracy. Communication chỉ chiếm
+**Kết quả cuối:** B1 80.26% · B2 81.59% · B3 81.73% accuracy. Communication chỉ chiếm
 ~0.3% round time; nút cổ chai là compute + đồng bộ, không phải mạng. Phân tán 2 máy KHÔNG
-tăng tốc với workload nhẹ này (round bị gate bởi node kiêm server). Chi tiết trong báo cáo.
+tăng tốc với workload nhẹ này (round bị gate bởi node kiêm server). Rendezvous barrier loại
+boot time khỏi round-1 (89.6s→10.96s). Fault tolerance verified (client chết → partial aggregate).
+Chi tiết trong báo cáo §3.4.

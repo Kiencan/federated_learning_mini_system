@@ -320,8 +320,8 @@ def run_federated(args, cfg: dict, server_addr: str) -> None:
     # ── Ket noi server sau khi da validate xong ───────────────────────────────
     print(f"[client {client_id}] connecting to {server_addr}")
     options = [
-        ("grpc.max_send_message_length", 16 * 1024 * 1024),
-        ("grpc.max_receive_message_length", 16 * 1024 * 1024),
+        ("grpc.max_send_message_length", 128 * 1024 * 1024),
+        ("grpc.max_receive_message_length", 128 * 1024 * 1024),
     ]
     with grpc.insecure_channel(server_addr, options=options) as channel:
         try:
@@ -402,8 +402,8 @@ def run_poll_only(args, cfg: dict, server_addr: str) -> None:
     """M2 compat — chi poll GetRoundStatus N lan roi thoat."""
     print(f"[client {args.client_id}] connecting to {server_addr}")
     options = [
-        ("grpc.max_send_message_length", 16 * 1024 * 1024),
-        ("grpc.max_receive_message_length", 16 * 1024 * 1024),
+        ("grpc.max_send_message_length", 128 * 1024 * 1024),
+        ("grpc.max_receive_message_length", 128 * 1024 * 1024),
     ]
     with grpc.insecure_channel(server_addr, options=options) as channel:
         try:

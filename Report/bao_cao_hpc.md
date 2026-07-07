@@ -73,6 +73,8 @@ với $n_k$ là số mẫu của client $k$, $n = \sum_k n_k$. FL vừa là bài
 - **Weak scaling**: tăng khối lượng tỷ lệ với số processor.
 - **Định luật Amdahl**: nếu phần tuần tự (không song song hoá được) chiếm tỷ lệ $s$, thì $S_p = \dfrac{1}{s + (1-s)/p}$. Speedup bị chặn trên bởi $1/s$ dù $p \to \infty$. Với hệ 2-node, $s$ chính là chi phí điều phối (mạng + đồng bộ + phần server tuần tự).
 
+> **Lý thuyết ↔ đo đạc khớp nhau (xem trước §7.3):** ở chế độ compute nặng, ta đo được $S_2 = 1.96$. Giải ngược Amdahl cho $p=2$: $1.96 = 1/(s + (1-s)/2) \Rightarrow s \approx 2.0\%$. Con số phần-tuần-tự **suy ra từ speedup** này trùng gần như hoàn hảo với **communication đo trực tiếp (~2.09%)** — bằng chứng độc lập rằng chi phí điều phối chính là communication + đồng bộ, đúng như mô hình Amdahl dự báo.
+
 ### 2.4 Phân loại nút cổ chai
 
 - **Compute-bound**: thời gian bị chi phối bởi tính toán (GPU). Phân tán giúp *nếu* compute có thể chạy song song thật.
@@ -122,9 +124,16 @@ Mỗi round, hệ ghi vào `round_log.csv`: `round_wallclock_sec` (tổng), `cli
 
 ## 4. Thiết lập thực nghiệm
 
-### 4.1 Phần cứng
+### 4.1 Phần cứng & phần mềm
 
-Hai máy **giống hệt**: NVIDIA **RTX 2000 Ada Generation**, CUDA 12.4, PyTorch 2.6.0+cu124, Windows. Phần cứng đồng nhất đảm bảo so sánh 1-máy vs 2-máy là công bằng (chênh lệch không đến từ GPU khác nhau).
+Hai máy dùng **GPU giống hệt**: NVIDIA **RTX 2000 Ada Generation**, Windows. Tuy nhiên **software stack khác nhau** (theo `run_meta.json`):
+
+| | GPU | PyTorch | CUDA |
+|---|---|---|---|
+| Máy 1 (server + client-0) | RTX 2000 Ada | **2.5.1+cu121** | **12.1** |
+| Máy 2 (client-1) | RTX 2000 Ada | 2.6.0+cu124 | 12.4 |
+
+GPU đồng nhất đảm bảo so sánh 1-máy vs 2-máy công bằng ở tầng phần cứng. **Lưu ý confound (xem §8):** Máy 1 chạy PyTorch cũ hơn (2.5.1 vs 2.6.0), nên một phần độ lệch "Máy 1 chậm hơn" (straggler) có thể đến từ **cả** phiên bản phần mềm **lẫn** tải server co-located — hai biến này chưa được tách trong thí nghiệm hiện tại.
 
 ### 4.2 Mạng: Ethernet trực tiếp 2.5GbE
 
@@ -307,6 +316,7 @@ Cùng một hệ thống, cùng phần cứng — chỉ đổi độ nặng mode
 ### 8.2 Hạn chế phương pháp
 
 - Chỉ **2 node** — chưa quan sát được scaling khi $p > 2$ (nơi chi phí đồng bộ tăng phi tuyến).
+- **Confound phần mềm (§4.1):** Máy 1 chạy PyTorch 2.5.1+cu121, Máy 2 chạy 2.6.0+cu124. Độ lệch "Máy 1 straggler" (heavy: c0 36s vs c1 30s) do đó lẫn **hai biến** — server co-located **và** torch cũ hơn — chưa tách được. Cách khắc phục: đồng bộ version 2 máy rồi chạy lại, hoặc hoán đổi vai trò server giữa 2 máy để cô lập tác động. Không ảnh hưởng kết luận chính (speedup 1.96× vẫn đo strong-scaling giữa 2 GPU song song), nhưng làm nhiễu phân tích straggler/load-balancing (§6.4).
 - B2/B3 nặng chạy ít round (3/10) do thời gian; speedup dựa trên steady-state wallclock (ổn định, độ lệch nhỏ) nhưng mẫu round nhỏ.
 - Đo trên Windows + một loại GPU; kết quả có thể khác trên cluster Linux/InfiniBand (nơi communication rẻ hơn nữa, càng củng cố kết luận compute-bound).
 - Đồng hồ hệ thống Máy 1 từng lệch ngày ở một số run — nhưng mọi *thời lượng* đều đo bằng `perf_counter` (đơn điệu), không ảnh hưởng.

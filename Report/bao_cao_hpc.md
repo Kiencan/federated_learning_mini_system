@@ -217,7 +217,7 @@ Communication chỉ chiếm **~0.3%** thời gian round (40ms / 14480ms). Lý do
 
 ### 6.2 Overlap compute–communication (eval off critical path)
 
-Server chạy **evaluation trong luồng nền** (background aggregation thread, thiết kế 3-pha: snapshot → heavy work không giữ lock → commit có guard), để client bắt đầu train round kế trong khi server còn đang đánh giá.
+Thiết kế ban đầu (3-pha) gộp **aggregate + eval** trong "heavy work" *trước* khi commit/advance → eval nằm **trên** critical path (§5.3). opt-A tách thành **4-pha**: (1) chờ+snapshot → (2) aggregate (FedAvg) → (3) commit + **advance round ngay** (client được giải phóng pull model round kế) → (4) **eval + log ở pha nền**, chạy song song với client đang train round kế. Eval dùng *temp model* (không chạm global model) nên an toàn khi round sau đã bắt đầu. Nhờ vậy client **bắt đầu train round kế trong khi server còn đang đánh giá** round trước.
 
 **Bằng chứng định lượng mạnh nhất — model nặng:** ResNet eval tốn **~15.3s**/round. Nếu eval nằm trên đường găng, round B3 nặng phải là ~36.5s (train) + 15.3s (eval) ≈ **52s**. Thực đo round chỉ **37.8s** ≈ train 36.5s + comm 1.1s — **eval 15s bị giấu hoàn toàn**. Overlap tiết kiệm **~27%** thời gian round ở chế độ nặng (52s → 37.8s).
 

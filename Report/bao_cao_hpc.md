@@ -364,12 +364,12 @@ Mọi con số trong báo cáo truy về đúng một run dưới `Report/data/`
 | B1 light | `exp_cifar_centralized/m1` | CifarCNN | 2×30 | 7.92s/epoch (tổng 237.6s) · best 81.17% |
 | B2 light | `exp_cifar_fed_1machine/m1_rv` | CifarCNN | 2×30 | 11.34s/round · best 82.24% |
 | B3 light | `exp_cifar_fed_2machine/m1_rv2` | CifarCNN | 2×30 | 14.48s/round · best 82.11% |
-| Solo heavy | `exp_cifar_heavy_solo/s2` | ResNet-18 | 1×3 | train 34.6s/client |
+| Solo heavy | `exp_cifar_heavy_solo/s2` | ResNet-18 | 1×2 | train 34.1s/client (mean 2 round) |
 | B2 heavy | `exp_cifar_heavy_1machine/b2b` | ResNet-18 | 1×4 | 74.28s/round · train 72.3s |
 | B3 heavy | `exp_cifar_heavy_2machine/m1_heavy` | ResNet-18 | 1×10 | 37.83s/round · acc 84.71% |
 | Rendezvous OFF | `exp_cifar_fed_2machine/m1` | CifarCNN | 2×30 | round-1 = 89.63s (cold) |
 | Load-balance 45/55 | `exp_cifar_fed_2machine/m1_optB` | CifarCNN | 2×30 | mean skew −1.21s |
 
-**Số dẫn xuất:** speedup nặng = 74.28/37.83 = **1.96×** (eff 98%); phân tán nhẹ = 11.34/14.48 = **0.78×** (thua); GPU contention = 71.9/34.1 = **2.11×** (test localhost; data commit solo/b2b = 72.3/34.6 = 2.09×, khớp); rendezvous round-1 89.63s → 10.96s; load-balance |skew| 2.57s → 1.21s.
+**Số dẫn xuất:** speedup nặng = 74.28/37.83 = **1.96×** (eff 98%); phân tán nhẹ = 11.34/14.48 = **0.78×** (thua, tức chậm 1.28×); GPU contention = T2/T1 = 72.3/34.1 = **2.11×** (committed solo/b2b, steady); rendezvous round-1 89.63s → 10.96s; load-balance |skew| **cùng opt-A** 1.86s → 1.21s (giảm 37%, over-correct đổi dấu). *Lưu ý skew: run baseline no-opt `m1_rv2` có |skew| tới 2.57s nhưng đó là mức chưa opt-A, không phải hiệu quả riêng của cân tải.*
 
 *Chi tiết triển khai FL gốc (MNIST, 5 vấn đề distributed systems) trong `Report/bao_cao_cuoi_ky.md` và `milestone_report.md`. Đo throughput mạng: `tools/throughput_test.py`.*

@@ -87,9 +87,11 @@ Phân tích communication overhead chiếm bao nhiêu % round time khi scale ra 
 - [x] **opt-A tăng tốc**: eval off critical path + poll 0.5s → B3 round 14.5s→10.7s (26%),
       chênh phân tán giảm 72% (3.2s→0.9s). Runs `m1_opt` (B2), `m1_opt5` (B3).
 - [x] **opt-B cân bằng shard**: `--shard-weights 0.45,0.55` (Máy 1 ít data hơn) → B3 10.7s→9.8s
-      ≈ B2 9.7s. Chênh phân tán 3.2s→0.1s (triệt tiêu). Run `m1_optB`.
+      ≈ B2 9.7s. Chênh round B3−B2 3.14s→0.08s (hòa, chưa thắng). Skew 1.86s→−1.21s (giảm 37%,
+      over-correct đổi dấu; tối ưu ~48/52). Run `m1_optB`.
 - [x] **Scale-up (phương án C)**: model ResNet-18 (`--model resnet`, 11M params, 42.7MB) →
-      GPU contention 2.11× → **B3 thắng B2 1.99×** (73.6s→37s). Lợi ích phân tán tỷ lệ compute.
+      GPU contention 2.11× → **B3 thắng B2 1.96×** (74.3s→37.8s, eff 98%). Light thua 1.28× /
+      heavy thắng 1.96× = xương sống lập luận. Lợi ích phân tán tỷ lệ compute.
       Runs `exp_cifar_heavy_*`. Fix gRPC limit 16→128MB.
 - [x] Viết báo cáo so sánh: [bao_cao_cifar10.md](bao_cao_cifar10.md)
 

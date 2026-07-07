@@ -140,7 +140,7 @@ mất 1 node), dù bản chạy đó không dùng cho benchmark vì 14/30 round 
 | **Fault tolerance** | Client chết giữa run → server partial-aggregate, hoàn thành 30 round không sập |
 | **Tối ưu overhead** | Eval off critical path + poll 0.5s → B3 round 14.5s→10.7s (26%) (§5) |
 | **Cân bằng tải** | Shard 45/55 (node kiêm server ít data hơn) → B3 10.7s→9.8s ≈ B2 9.7s; chênh phân tán 3.2s→0.1s (§5) |
-| **Scale-up (khi nào phân tán thắng)** | Model nặng (ResNet-18) → GPU saturate → B3 thắng B2 **1.99×**; lợi ích phân tán tỷ lệ compute (§6) |
+| **Scale-up (khi nào phân tán thắng)** | Model nặng (ResNet-18) → GPU saturate → B3 thắng B2 **1.96×** (eff 98%); lợi ích phân tán tỷ lệ compute (§6) |
 
 ## 5. Tối ưu tăng tốc (opt-A + opt-B) — triệt tiêu chi phí phân tán
 
@@ -188,26 +188,33 @@ nguyên** (81.62%). CLI `--shard-weights 0.45,0.55` (giống nhau mọi client).
 | **B3 opt-A+B (45/55)** | **9.8s** | 7.5s | 8.7s | **1.21s** |
 | B2 opt-A (1 máy) | 9.7s | — | — | — |
 
-→ Round giảm tiếp **10.7s → 9.8s**, imbalance train giảm 1.86s→1.21s. **B3 (9.8s) ≈ B2 (9.7s)** —
-phân tán 2 máy giờ **ngang bằng** 1 máy (chênh 0.1s trong nhiễu run-to-run).
+→ Round giảm tiếp **10.7s → 9.8s** (cắt được client chậm nhất 10.1s→8.7s). Về train skew:
+1.86s (Máy 1 chậm hơn) → **−1.21s** — **giảm 37% nhưng ĐỔI DẤU**: 45/55 hơi quá tay, giờ Máy 2
+(55% data) thành client chậm hơn. Tỷ lệ tối ưu ~**48/52**, chưa cân hoàn hảo. Dù vậy **B3 (9.8s)
+≈ B2 (9.7s)** — chênh chỉ 0.08s (trong nhiễu). **Lưu ý quan trọng:** đây là *ngang bằng*, KHÔNG
+phải thắng — với model nhẹ, phân tán tốt nhất chỉ **hòa** 1 máy (xem §6 để phân tán THẮNG).
 
-→ **Kết luận opt — hành trình triệt tiêu chi phí phân tán:**
+→ **Kết luận opt — hành trình thu hẹp chi phí phân tán (model nhẹ):**
 
-| | B3−B2 gap | Nút cổ chai xử lý |
-|---|:---:|---|
-| Baseline (rendezvous) | 3.2s | — |
-| + opt-A (eval off-path + poll) | 0.9s | overhead điều phối |
-| + opt-B (cân bằng shard) | ~0.1s | mất cân bằng tải |
+| | B3 round | B2 round | B3−B2 | Phân tán |
+|---|:---:|:---:|:---:|:---:|
+| Baseline (rendezvous) | 14.48s | 11.34s | **+3.14s** | **THUA 1.28×** |
+| + opt-A (eval off-path + poll) | 10.66s | 9.73s | +0.93s | thua nhẹ |
+| + opt-B (cân bằng shard) | 9.81s | 9.73s | +0.08s | **hòa** |
 
-Với workload nhẹ + link nhanh, sau khi cắt overhead điều phối và cân bằng tải, phân tán 2 máy
-**ngang bằng** 1 máy. Communication (0.3%) chưa bao giờ là nút cổ chai — các nút thực là **eval
-trên critical path, poll latency, và load imbalance**, đều xử lý được mà không đụng tới mạng.
+**Điểm mấu chốt:** với model nhẹ, ở baseline phân tán **THUA rõ 1.28×** (B3 14.48s > B2 11.34s) —
+vì GPU chưa bão hoà nên 2 client/1 GPU (B2) không serialize, trong khi B3 gánh thêm network +
+straggler Máy 1 kiêm server. Sau opt-A + opt-B, phân tán chỉ **đuổi kịp về hòa**, KHÔNG bao giờ
+thắng. Communication (0.3%) chưa bao giờ là nút cổ chai — các nút thực là **eval trên critical
+path, poll latency, load imbalance**, đều xử lý được không đụng mạng. **Nhưng "hòa" chưa đủ hấp
+dẫn để phân tán → đó là động lực chuyển sang model nặng ở §6, nơi phân tán thực sự THẮNG.**
 
 ## 6. Khi nào phân tán THẮNG — scale-up compute intensity
 
-§5 cho thấy với model nhẹ (CifarCNN 620K), phân tán chỉ **ngang bằng** 1 máy. Câu hỏi: **khi nào
-phân tán thực sự nhanh hơn?** Giả thuyết: khi compute đủ nặng để **1 client saturate GPU**, thì
-2 client trên 1 GPU (B2) phải serialize, còn 2 GPU riêng (B3) chạy song song → B3 thắng.
+§5 cho thấy với model nhẹ (CifarCNN 620K), phân tán **thua ở baseline (1.28×)** và tốt nhất chỉ
+**hòa** 1 máy sau tối ưu. Câu hỏi: **có khi nào phân tán thực sự nhanh hơn?** Giả thuyết: khi
+compute đủ nặng để **1 client saturate GPU**, thì 2 client trên 1 GPU (B2) phải serialize, còn
+2 GPU riêng (B3) chạy song song → B3 thắng.
 
 **Thí nghiệm:** đổi sang model nặng **ResNet-18** (11.17M params, gấp 18× CifarCNN; payload
 **42.7 MB** so với 2.4 MB). CLI `--model resnet`. (Phải bump gRPC message limit 16→128MB.)
@@ -225,31 +232,36 @@ CifarCNN nhẹ (2 client chạy chồng lấn gần như miễn phí).
 
 **Kết quả 2 máy thật (ResNet):**
 
-| | Round | Cơ chế |
+| | Round (steady) | Cơ chế |
 |---|:---:|---|
-| B2 (1 máy, 2 client/1 GPU) | 73.6s | serialize |
-| **B3 (2 máy, 2 GPU song song)** | **37.0s** | song song |
-| **→ Phân tán nhanh hơn** | **1.99×** | |
+| B2 (1 máy, 2 client/1 GPU) | 74.3s | serialize |
+| **B3 (2 máy, 2 GPU song song)** | **37.8s** | song song |
+| **→ Phân tán nhanh hơn** | **1.96×** (hiệu suất 98%) | |
 
-→ B3 mỗi client chạy trên GPU riêng (Máy1 36.4s, Máy2 29.7s, round gate bởi Máy1), khớp T1 solo.
+→ B3 mỗi client chạy trên GPU riêng (Máy1 ~36s, Máy2 ~30s, round gate bởi Máy1), khớp T1 solo
+(~34s). Speedup **1.96×** trên 2 máy ⇒ **hiệu suất song song 98%** — gần strong-scaling lý tưởng.
 Communication (payload 42.7MB) là 390ms/round = **~1% round** — kể cả model gấp 18×, **mạng vẫn
-không phải nút cổ chai** trên link 2.5GbE.
+không phải nút cổ chai** trên link 2.5GbE. *(Lưu ý: B2-heavy chạy ít round — n=2 steady; số ổn
+định nhưng nên chạy dài hơn nếu cần độ chính xác cao hơn.)*
 
 **Kết luận scale-up:** **lợi ích phân tán tỷ lệ với độ nặng compute.** Workload nhẹ → 1 GPU gánh
-2 client thoải mái → phân tán ngang bằng (§5). Workload nặng → 1 GPU serialize → phân tán 2 máy
-**tăng tốc gần tuyến tính (~2× với 2 máy)**. Đây là lý do FL/phân tán đáng giá khi model/dữ liệu
-đủ lớn — đúng bối cảnh thực tế (model production lớn hơn nhiều CifarCNN).
+2 client thoải mái (không serialize) → phân tán **thua/hòa** 1 máy (§5). Workload nặng → 1 GPU
+serialize → phân tán 2 máy **tăng tốc gần tuyến tính (1.96×, hiệu suất 98%)**. Cặp **"nhẹ thua /
+nặng thắng"** trả lời trực tiếp câu hỏi nghiên cứu: FL/phân tán đáng giá khi model/dữ liệu đủ lớn
+để bão hoà GPU — đúng bối cảnh thực tế (model production lớn hơn nhiều CifarCNN).
 
 ## 7. Kết luận & hạn chế
 
 **Kết luận:** Mở rộng CIFAR-10 + model lớn hơn chạy tốt trên hệ 2 máy. Accuracy ~81.5% ổn định
 qua mọi cấu hình. Communication qua Ethernet 2.5GbE là **không đáng kể** với model cỡ này —
-nút cổ chai thực sự là **compute + đồng bộ**, không phải mạng. Sau opt-A (eval off critical path
-+ poll) và opt-B (cân bằng shard), chi phí phân tán **triệt tiêu** (chênh 3.2s → 0.1s): phân tán
-2 máy ngang bằng 1 máy. Các nút cổ chai thực (eval on-path, poll, load imbalance) đều xử lý được
-mà không đụng tới mạng — khẳng định communication chưa bao giờ là giới hạn với workload/link này.
-Và khi **scale-up compute** (ResNet-18, §6), phân tán 2 máy **thắng rõ 1.99×** vì 1 GPU serialize
-2 client còn 2 GPU song song → **lợi ích phân tán tỷ lệ với độ nặng compute** (mạng vẫn ~1%).
+nút cổ chai thực sự là **compute + đồng bộ**, không phải mạng. **Với model nhẹ, phân tán THUA
+1 máy ở baseline (1.28×)**; sau opt-A (eval off critical path + poll) và opt-B (cân bằng shard),
+chi phí phân tán thu hẹp mạnh (chênh round 3.14s → 0.08s) nhưng tốt nhất chỉ **đuổi kịp về hòa**,
+không thắng. Các nút cổ chai thực (eval on-path, poll, load imbalance) đều xử lý được mà không đụng
+tới mạng — khẳng định communication chưa bao giờ là giới hạn. **Chỉ khi scale-up compute**
+(ResNet-18, §6) phân tán mới **thắng rõ 1.96× (hiệu suất song song 98%)** vì 1 GPU serialize 2 client
+còn 2 GPU chạy song song → **lợi ích phân tán tỷ lệ với độ nặng compute** (mạng vẫn ~1%). Cặp
+**"nhẹ thua / nặng thắng"** là kết luận trung tâm: phân tán đáng giá khi compute đủ nặng.
 
 **Hạn chế / lưu ý phương pháp:**
 - Cả 3 kịch bản anchor trên Máy 1 (server/node chính), phần cứng nhất quán — đã kiểm chứng

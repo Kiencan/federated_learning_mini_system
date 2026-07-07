@@ -183,15 +183,15 @@ Ba kịch bản đạt accuracy **ngang nhau** (~81–82%). Với dữ liệu II
 
 Phân rã round của B3 nhẹ (14.48s):
 
-| Thành phần | Thời gian | Ghi chú |
-|---|---|---|
-| Compute (client train) | ~10.4s | **bị chặn bởi client chậm nhất** (client-0/Máy 1 = 10.4s; client-1/Máy 2 = 7.9s) |
-| Communication (download+upload) | ~40ms | download 21ms + upload ~20ms |
-| Aggregation (server) | ~4ms | gần như vô hình |
-| Evaluation (server) | ~2.9s | chạy nền, chồng lấp một phần |
-| Sync/polling overhead | phần còn lại | rendezvous, poll status |
+| Thành phần | Thời gian | % round | Ghi chú |
+|---|---|---|---|
+| Compute (client train) | ~10.4s | 72% | **bị chặn bởi client chậm nhất** (client-0/Máy 1 = 10.4s; client-1/Máy 2 = 7.9s) |
+| Evaluation (server) | ~2.9s | **20%** | **TRÊN critical path** ở baseline — client chờ server eval xong mới sang round sau (§6.2 sẽ chuyển off-path) |
+| Sync/polling overhead | ~1.1s | 8% | rendezvous, poll status (`POLL_INTERVAL=2s` — §6.3 giảm) |
+| Communication (download+upload) | ~40ms | 0.3% | download 21ms + upload ~20ms |
+| Aggregation (server) | ~4ms | ~0% | gần như vô hình |
 
-Round bị chi phối bởi **client chậm nhất** (bounded-synchronous): dù client-1 train xong ~7.9s, round vẫn phải chờ client-0 ~10.4s — chính là straggler Máy 1 kiêm server (xử lý ở §6.4).
+Round bị chi phối bởi **client chậm nhất** (bounded-synchronous): dù client-1 train xong ~7.9s, round vẫn phải chờ client-0 ~10.4s — chính là straggler Máy 1 kiêm server (xử lý ở §6.4). **Đáng chú ý: ở baseline, evaluation (~2.9s) nằm TRÊN critical path** — chiếm 20% round, client ngồi chờ trong khi server eval. Đây chính là mục tiêu của opt-A (§6.2): chuyển eval xuống chạy nền song song round sau. Verify bằng thứ tự event `aggregation_done → evaluation_done → round_done` (eval trước khi advance).
 
 ![Phân rã thời gian mỗi round](figures/cifar_round_time_breakdown.png)
 

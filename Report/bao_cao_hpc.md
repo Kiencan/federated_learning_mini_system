@@ -45,7 +45,7 @@ Báo cáo xây dựng một hệ **Federated Learning 2-node** hoàn chỉnh (gR
 
 1. **Một hệ FL 2-node được đo đạc chi tiết:** kiến trúc server–client gRPC/protobuf với FedAvg, đồng bộ *bounded-synchronous* + *rendezvous barrier*, và **instrumentation phân rã thời gian mỗi round** (compute / communication / aggregation / evaluation) — quy trách nhiệm từng phần thời gian thay vì chỉ đo tổng.
 2. **Chứng minh lợi ích phân tán tỷ lệ với cường độ compute.** Mô hình nhẹ: phân tán **thua** 1.28×. Mô hình nặng (ResNet-18, ~11M tham số, làm bão hoà GPU): phân tán **thắng 1.96×** (hiệu suất song song 98%), đo bằng strong scaling.
-3. **Định vị đúng nút cổ chai.** Bác bỏ trực giác "truyền thông là rào cản": communication chỉ chiếm **~0.3%** (model nhẹ) đến **~3%** (model nặng) thời gian round. Bottleneck thật là **tranh chấp GPU** — đo được **2.11×** khi 2 client dùng chung một GPU.
+3. **Định vị đúng nút cổ chai.** Bác bỏ trực giác "truyền thông là rào cản": communication chỉ chiếm **~0.3%** (model nhẹ) đến **~2%** (model nặng) thời gian round. Bottleneck thật là **tranh chấp GPU** — đo được **2.11×** khi 2 client dùng chung một GPU.
 4. **Bốn tối ưu hệ thống có kiểm chứng** (rendezvous barrier: round đầu **89.6s → 11.0s**; overlap eval khỏi đường găng: giấu ~15s eval ResNet; giảm poll-wait; cân bằng tải bằng shard weighting) **triệt tiêu chi phí phân tán**: chênh round-time B3−B2 (model nhẹ) thu hẹp **3.14s → 0.08s**.
 5. **Bài học HPC tổng quát:** kết quả minh hoạ định luật Amdahl — chỉ song song hoá cái đang là bottleneck; phân tán đáng giá khi phần compute song song hoá được đủ lớn để lấn át chi phí điều phối tuần tự.
 
@@ -220,12 +220,16 @@ Client poll trạng thái round mỗi `POLL_INTERVAL_SEC`. Với giá trị cũ 
 
 **Vấn đề straggler nội tại:** dù chia shard **đều 50/50**, Máy 1 chậm hơn vì kiêm server + aggregation + eval. Đo độ lệch hoàn thành giữa 2 client (|train_c0 − train_c1|):
 
-| Cấu hình shard | mean \|skew\| | Diễn giải |
+| Cấu hình shard (cùng opt-A) | mean \|skew\| | Diễn giải |
 |---|---|---|
-| Đều 50/50 | **2.57s** | client-0 (Máy 1) là straggler cố định |
-| Cân 45/55 | **1.21s** | giảm 53%, nhưng **over-correct** (đổi dấu: client-1 giờ chậm hơn) |
+| Đều 50/50 | **1.86s** | client-0 (Máy 1) là straggler cố định |
+| Cân 45/55 | **1.21s** | giảm 37%, nhưng **over-correct** (đổi dấu: client-1 giờ chậm hơn) |
 
-Cho client-0 ít dữ liệu hơn (45%) để bù tải server là **đúng hướng** và giảm lệch hơn một nửa. Nhưng tỷ lệ 45/55 **quá tay** — điểm tối ưu nằm khoảng ~48/52. Đây là minh hoạ kinh điển của *load balancing* trong HPC: cân theo **năng lực thực** của node (đã trừ overhead), không theo số lượng danh nghĩa.
+> So sánh táo-táo: cả hai đều đã áp opt-A (run `m1_opt5` vs `m1_optB`) để cô lập đúng tác động của
+> shard weighting. (Ở baseline chưa opt-A, straggler còn nặng hơn — skew tới **2.57s** trong `m1_rv2` —
+> nhưng phần đó thuộc về opt-A/nhiễu, không nên gộp vào hiệu quả cân tải.)
+
+Cho client-0 ít dữ liệu hơn (45%) để bù tải server là **đúng hướng** và giảm lệch **~37%**. Nhưng tỷ lệ 45/55 **quá tay** — độ lệch đổi dấu (client-1 giờ chậm hơn), điểm tối ưu nằm khoảng ~48/52. Đây là minh hoạ kinh điển của *load balancing* trong HPC: cân theo **năng lực thực** của node (đã trừ overhead), không theo số lượng danh nghĩa.
 
 ### 6.5 Kết quả: triệt tiêu chi phí điều phối (chênh B3−B2: 3.14s → 0.08s)
 
@@ -321,7 +325,7 @@ Cùng một hệ thống, cùng phần cứng — chỉ đổi độ nặng mode
 Báo cáo xây dựng một hệ Federated Learning 2-node (gRPC + FedAvg) được đo đạc chi tiết, và dùng nó trả lời câu hỏi HPC trung tâm — **khi nào phân tán tăng tốc?** — qua 5 phát hiện định lượng:
 
 1. **Lợi ích phân tán tỷ lệ với cường độ compute.** Model nhẹ (CifarCNN): phân tán **thua 1.28×** vì GPU chưa bão hoà. Model nặng (ResNet-18): phân tán **thắng 1.96×**, hiệu suất song song **98%** — strong scaling gần lý tưởng.
-2. **Nút cổ chai KHÔNG phải communication.** Truyền model chỉ chiếm ~0.3% (nhẹ) đến ~3% (nặng) thời gian round; link 2.5GbE (2.36 Gbps) thừa băng thông.
+2. **Nút cổ chai KHÔNG phải communication.** Truyền model chỉ chiếm ~0.3% (nhẹ) đến ~2% (nặng) thời gian round; link 2.5GbE (2.36 Gbps) thừa băng thông.
 3. **Bottleneck thật là tranh chấp GPU + đồng bộ.** GPU contention đo được **2.11×** khi 2 client chung 1 GPU; cấp mỗi client một GPU riêng (B3) giải phóng nút này.
 4. **Chi phí điều phối triệt tiêu được bằng tối ưu hệ thống.** Rendezvous (round đầu 89.6s→11s), overlap eval (giấu ~15s/round), giảm poll-wait, load balancing — khép chênh round B3−B2 (nhẹ) từ **3.14s về 0.08s**.
 5. **Định luật Amdahl được minh hoạ định lượng.** Phần tuần tự (điều phối) chỉ ~2% ở chế độ nặng → phân tán chỉ đáng giá khi compute song song hoá đủ lớn để lấn át phần tuần tự này.

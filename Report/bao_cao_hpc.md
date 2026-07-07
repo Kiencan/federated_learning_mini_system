@@ -268,7 +268,7 @@ Câu hỏi: khi 2 client dùng **chung 1 GPU** (B2), chúng chạy song song hay
 | T2 — 2 client / 1 GPU (B2 nặng) | **71.9s** |
 | 2 client / 2 GPU (B3 nặng) | **33.1s** |
 
-Tỷ lệ **T2 / T1 = 71.9 / 34.1 = 2.11×** (đo bằng test contention localhost chuyên biệt; data commit solo/b2b cho 2.09× — khớp trong nhiễu). Khi GPU đã bão hoà bởi một client, thêm client thứ hai trên **cùng** GPU khiến mỗi client chậm gấp đôi — chúng **serialize**, không song song. Cấp cho mỗi client một GPU riêng (B3) khôi phục tốc độ về ~33s (≈ solo). Đây chính là bottleneck mà model nhẹ (§5.2) che giấu (vì GPU chưa bão hoà nên contention < 2×).
+Tỷ lệ **T2 / T1 = 72.3 / 34.1 ≈ 2.11×** (từ committed `exp_cifar_heavy_solo/s2` và `exp_cifar_heavy_1machine/b2b`, steady-state). Khi GPU đã bão hoà bởi một client, thêm client thứ hai trên **cùng** GPU khiến mỗi client chậm gấp đôi — chúng **serialize**, không song song. Cấp cho mỗi client một GPU riêng (B3) khôi phục tốc độ về ~33s (≈ solo). Đây chính là bottleneck mà model nhẹ (§5.2) che giấu (vì GPU chưa bão hoà nên contention < 2×).
 
 ![GPU contention](figures/cifar_gpu_contention.png)
 

@@ -168,7 +168,7 @@ Con số throughput này quan trọng cho phân tích §5.4: link **thừa** bă
 
 Ba kịch bản đạt accuracy **ngang nhau** (~81–82%). Với dữ liệu IID, FedAvg xấp xỉ tốt gradient descent tập trung — **phân tán không làm giảm chất lượng model**. Kết luận: chi phí của phân tán nằm ở *thời gian/điều phối*, không ở accuracy.
 
-> **Ghi chú ngân sách compute (multi-seed, n=4):** con số B1 = 81.17% ở trên hơi thấp vì phép so **chưa cân compute** — federated dùng `local_epochs=2` nên mỗi round bơm gấp đôi gradient work so với 1 epoch centralized. Cân lại (centralized **60 epoch** = cùng 3.000K image-pass) và đo **4 seed** (42/1/7/123) mỗi bên: centralized **81.72 ± 0.25%** vs federated **82.12 ± 0.17%** — chênh <0.5%, nằm trong nhiễu cộng hiệu ứng regularization nhẹ của model-averaging (Local-SGD). Kết luận parity **được củng cố** khi cân đúng ngân sách: phân tán *không* thắng cũng *không* thua centralized về chất lượng.
+> **Ghi chú ngân sách compute (cân lại cho công bằng):** con số B1 = 81.17% ở trên hơi thấp vì phép so **chưa cân compute** — federated dùng `local_epochs=2` nên mỗi round bơm gấp đôi gradient work so với 1 epoch centralized. Cân lại (centralized **60 epoch** = cùng 3.000K image-pass): centralized đo **4 seed** (42/1/7/123) đạt **81.72 ± 0.25%**; federated (seed 42) đạt best **82.11%** — nằm trong/trên dải centralized, chênh <0.5%. (Federated **chưa** chạy đa-seed; nhưng all-reduce local-SGD — *cùng* thuật toán model-averaging — đo 4 seed cho **82.06 ± 0.30%**, §8.2, xác nhận vùng ~82%.) Kết luận parity **được củng cố** khi cân đúng ngân sách: phân tán *không* thắng cũng *không* thua centralized về chất lượng.
 
 ![Accuracy hội tụ theo round](figures/cifar_accuracy_per_round.png)
 
@@ -332,7 +332,7 @@ Cùng phần cứng, cùng 3.000K image-pass budget, seed 42, crit-path (train +
 
 **Speedup Kiểu A vs federated opt-A:** 1 máy **1.37×** (291→213s), 2 máy **1.50×** (317→211s). (So với baseline federated *chưa* opt-A thì tới **1.78×** trên 2 máy — nhưng đó là so với bản chưa tối ưu, không công bằng.)
 
-**Accuracy không đổi.** Multi-seed (n=4: seed 42/1/7/123): all-reduce A = **82.06 ± 0.30%** vs federated = **82.12 ± 0.17%** — chênh −0.06pp, Welch t = −0.35, **p = 0.73**, không phân biệt được về mặt thống kê. All-reduce cho *cùng chất lượng* ở tốc độ cao hơn.
+**Accuracy không đổi.** All-reduce A đo **đa-seed** (n=4: seed 42/1/7/123) đạt **82.06 ± 0.30%**. Federated param-server (chạy seed 42) đạt best **82.11%** (Phụ lục A, `m1_rv2`) — nằm gọn trong khoảng ±0.30% của all-reduce, chênh < 0.1pp. Federated **không chạy đa-seed** nên chưa kiểm định t chính thức được, nhưng khác biệt nhỏ hơn nhiều so với dao động seed của all-reduce → **hai kiến trúc cho cùng chất lượng model**; all-reduce chỉ nhanh hơn về tốc độ, không đánh đổi accuracy.
 
 ![All-reduce vs parameter-server: crit-path 1 máy / 2 máy](figures/cifar_allreduce_speedup.png)
 
@@ -410,7 +410,7 @@ Báo cáo xây dựng một hệ Federated Learning 2-node (gRPC + FedAvg) đư�
 3. **Bottleneck thật là tranh chấp GPU + đồng bộ.** GPU contention đo được **2.11×** khi 2 client chung 1 GPU; cấp mỗi client một GPU riêng (B3) giải phóng nút này.
 4. **Chi phí điều phối triệt tiêu được bằng tối ưu hệ thống.** Rendezvous (round đầu 89.6s→11s), overlap eval (giấu ~15s/round), giảm poll-wait, load balancing — khép chênh round B3−B2 (nhẹ) từ **3.14s về 0.08s**.
 5. **Định luật Amdahl được minh hoạ định lượng.** Phần tuần tự (điều phối) chỉ ~2% ở chế độ nặng → phân tán chỉ đáng giá khi compute song song hoá đủ lớn để lấn át phần tuần tự này.
-6. **Kiến trúc điều phối cũng quyết định tốc độ, không chỉ cường độ compute.** Thay parameter-server bằng **all-reduce phi tập trung** (local-SGD) nhanh **1.37× (1 máy) → 1.50× (2 máy)** ở accuracy y hệt (n=4 seed, p=0.73), nhờ cắt chi phí điều phối server (poll + handshake) — chi phí này *vẫn tăng ~9%* khi ra 2 máy dù đã opt-A, còn all-reduce phẳng. Ngược lại, all-reduce **mỗi batch** chậm **7.4×**: tần suất đồng bộ chi phối, không phải khối lượng. (§8)
+6. **Kiến trúc điều phối cũng quyết định tốc độ, không chỉ cường độ compute.** Thay parameter-server bằng **all-reduce phi tập trung** (local-SGD) nhanh **1.37× (1 máy) → 1.50× (2 máy)** ở accuracy tương đương (all-reduce 82.06±0.30% qua 4 seed ≈ federated 82.11%), nhờ cắt chi phí điều phối server (poll + handshake) — chi phí này *vẫn tăng ~9%* khi ra 2 máy dù đã opt-A, còn all-reduce phẳng. Ngược lại, all-reduce **mỗi batch** chậm **7.4×**: tần suất đồng bộ chi phối, không phải khối lượng. (§8)
 
 Cặp kết quả **"nhẹ thua / nặng thắng"** trả lời trực tiếp câu hỏi nghiên cứu và đúng bối cảnh thực tế: model production lớn hơn CifarCNN nhiều lần nên bão hoà GPU và hưởng lợi từ phân tán — miễn là chi phí điều phối được kiểm soát.
 
@@ -450,6 +450,6 @@ Mọi con số trong báo cáo truy về đúng một run dưới `Report/data/`
 
 **Số dẫn xuất:** speedup nặng = 74.28/37.83 = **1.96×** (eff 98%); phân tán nhẹ = 11.34/14.48 = **0.78×** (thua, tức chậm 1.28×); GPU contention = T2/T1 = 72.3/34.1 = **2.11×** (committed solo/b2b, steady); rendezvous round-1 89.63s → 10.96s; load-balance |skew| **cùng opt-A** 1.86s → 1.21s (giảm 37%, over-correct đổi dấu). *Lưu ý skew: run baseline no-opt `m1_rv2` có |skew| tới 2.57s nhưng đó là mức chưa opt-A, không phải hiệu quả riêng của cân tải.*
 
-**Số dẫn xuất all-reduce (§8):** Kiểu A vs federated **opt-A** = 291.0/212.9 = **1.37×** (1 máy), 316.8/210.6 = **1.50×** (2 máy); accuracy A = 82.06±0.30% vs federated 82.12±0.17% (Welch p=0.73, ngang); Kiểu B = 1575.8/212.9 = **7.4× chậm** hơn A; vs Centralized B1 = 540.8/210.6 = **2.57×** (nhưng 1-máy đã đạt 2.54× → chủ yếu là hiệu ứng utilization GPU, không phải phân tán). Sinh lại: `python allreduce_train.py --mode A|B ...` (xem docstring script cho lệnh 1-máy & 2-máy; backend gloo, cần `GLOO_SOCKET_IFNAME` + tắt IPv6 khi chạy 2 máy Windows).
+**Số dẫn xuất all-reduce (§8):** Kiểu A vs federated **opt-A** = 291.0/212.9 = **1.37×** (1 máy), 316.8/210.6 = **1.50×** (2 máy); accuracy A = 82.06±0.30% (n=4 seed) ≈ federated seed-42 best 82.11% (chênh <0.1pp, trong dải seed); Kiểu B = 1575.8/212.9 = **7.4× chậm** hơn A; vs Centralized B1 = 540.8/210.6 = **2.57×** (nhưng 1-máy đã đạt 2.54× → chủ yếu là hiệu ứng utilization GPU, không phải phân tán). Sinh lại: `python allreduce_train.py --mode A|B ...` (xem docstring script cho lệnh 1-máy & 2-máy; backend gloo, cần `GLOO_SOCKET_IFNAME` + tắt IPv6 khi chạy 2 máy Windows).
 
 *Chi tiết triển khai FL gốc (MNIST, 5 vấn đề distributed systems) trong `Report/bao_cao_cuoi_ky.md` và `milestone_report.md`. Đo throughput mạng: `tools/throughput_test.py`.*

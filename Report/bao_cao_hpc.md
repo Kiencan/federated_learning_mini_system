@@ -49,6 +49,7 @@ Báo cáo xây dựng một hệ **Federated Learning 2-node** hoàn chỉnh (gR
 3. **Định vị đúng nút cổ chai.** Bác bỏ trực giác "truyền thông là rào cản": communication chỉ chiếm **~0.3%** (model nhẹ) đến **~2%** (model nặng) thời gian round. Bottleneck thật là **tranh chấp GPU** — đo được **2.11×** khi 2 client dùng chung một GPU.
 4. **Bốn tối ưu hệ thống có kiểm chứng** (rendezvous barrier: round đầu **89.6s → 11.0s**; overlap eval khỏi đường găng: giấu ~15s eval ResNet; giảm poll-wait; cân bằng tải bằng shard weighting) **triệt tiêu chi phí phân tán**: chênh round-time B3−B2 (model nhẹ) thu hẹp **3.14s → 0.08s**.
 5. **Bài học HPC tổng quát:** kết quả minh hoạ định luật Amdahl — chỉ song song hoá cái đang là bottleneck; phân tán đáng giá khi phần compute song song hoá được đủ lớn để lấn át chi phí điều phối tuần tự.
+6. **Kiến trúc điều phối cũng quyết định tốc độ:** thay parameter-server bằng **all-reduce phi tập trung** (§8) nhanh thêm **1.37–1.50×** ở accuracy tương đương, vì all-reduce tránh được chi phí polling + handshake mà param-server phải gánh — và chi phí đó **tăng theo số node** trong kiến trúc tập trung nhưng **phẳng** trong all-reduce.
 
 ---
 
@@ -74,7 +75,7 @@ với $n_k$ là số mẫu của client $k$, $n = \sum_k n_k$. FL vừa là bài
 - **Weak scaling**: tăng khối lượng tỷ lệ với số processor.
 - **Định luật Amdahl**: nếu phần tuần tự (không song song hoá được) chiếm tỷ lệ $s$, thì $S_p = \dfrac{1}{s + (1-s)/p}$. Speedup bị chặn trên bởi $1/s$ dù $p \to \infty$. Với hệ 2-node, $s$ chính là chi phí điều phối (mạng + đồng bộ + phần server tuần tự).
 
-> **Lý thuyết ↔ đo đạc khớp nhau (xem trước §7.3):** ở chế độ compute nặng, ta đo được $S_2 = 1.96$. Giải ngược Amdahl cho $p=2$: $1.96 = 1/(s + (1-s)/2) \Rightarrow s \approx 2.0\%$. Con số phần-tuần-tự **suy ra từ speedup** này trùng gần như hoàn hảo với **communication đo trực tiếp (~2.09%)** — bằng chứng độc lập rằng chi phí điều phối chính là communication + đồng bộ, đúng như mô hình Amdahl dự báo.
+> **Lý thuyết ↔ đo đạc cùng bậc độ lớn (xem trước §7.3):** ở chế độ compute nặng, ta đo được $S_2 = 1.96$. Giải ngược Amdahl cho $p=2$: $1.96 = 1/(s + (1-s)/2) \Rightarrow s \approx 2\%$. Lưu ý $s$ ở đây là phần **KHÔNG** chồng lấn được giữa 2 client trong một round — tức phần communication + aggregation xảy ra ngoài cửa sổ compute song song (round = max(train₀, train₁) + comm + agg) — chứ **không** bao gồm độ lệch straggler (client nhanh idle chờ, vốn đã nằm *trong* cửa sổ compute song song nên không tính vào $s$). Con số này **cùng bậc độ lớn** với communication đo trực tiếp ở chế độ nặng (~1.1s / 37.8s ≈ 2–3%, §7.2) — một phép kiểm tra chéo hợp lý (không phải bằng nhau tuyệt đối, vì $s$ còn gộp cả aggregation và overhead server còn sót lại), củng cố rằng phần tuần tự chủ yếu là communication+aggregation ở chế độ nặng, chứ không phải bị straggler chi phối.
 
 ### 2.4 Phân loại nút cổ chai
 
@@ -271,7 +272,7 @@ Câu hỏi: khi 2 client dùng **chung 1 GPU** (B2), chúng chạy song song hay
 | T2 — 2 client / 1 GPU (B2 nặng) | **71.9s** |
 | 2 client / 2 GPU (B3 nặng) | **33.1s** |
 
-Tỷ lệ **T2 / T1 = 72.3 / 34.1 ≈ 2.11×** (từ committed `exp_cifar_heavy_solo/s2` và `exp_cifar_heavy_1machine/b2b`, steady-state). Khi GPU đã bão hoà bởi một client, thêm client thứ hai trên **cùng** GPU khiến mỗi client chậm gấp đôi — chúng **serialize**, không song song. Cấp cho mỗi client một GPU riêng (B3) khôi phục tốc độ về ~33s (≈ solo). Đây chính là bottleneck mà model nhẹ (§5.2) che giấu (vì GPU chưa bão hoà nên contention < 2×).
+Tỷ lệ **T2 / T1 = 71.9 / 34.1 ≈ 2.11×** (test contention localhost chuyên biệt; cross-check với data commit `exp_cifar_heavy_solo/s2`/`exp_cifar_heavy_1machine/b2b` cho 72.3/34.6 ≈ 2.09×, khớp trong nhiễu). Khi GPU đã bão hoà bởi một client, thêm client thứ hai trên **cùng** GPU khiến mỗi client chậm gấp đôi — chúng **serialize**, không song song. Cấp cho mỗi client một GPU riêng (B3) khôi phục tốc độ về ~33s (≈ solo). Đây chính là bottleneck mà model nhẹ (§5.2) che giấu (vì GPU chưa bão hoà nên contention < 2×).
 
 ![GPU contention](figures/cifar_gpu_contention.png)
 
@@ -448,7 +449,7 @@ Mọi con số trong báo cáo truy về đúng một run dưới `Report/data/`
 | All-reduce A 2máy | `exp_cifar_allreduce/A_2m_s42` | CifarCNN | 30×2 | 82.25% · crit-path 210.6s |
 | All-reduce B | `exp_cifar_allreduce/B_s42` | CifarCNN | 60 epoch | 82.33% · 1575.8s (chậm 7.4×) |
 
-**Số dẫn xuất:** speedup nặng = 74.28/37.83 = **1.96×** (eff 98%); phân tán nhẹ = 11.34/14.48 = **0.78×** (thua, tức chậm 1.28×); GPU contention = T2/T1 = 72.3/34.1 = **2.11×** (committed solo/b2b, steady); rendezvous round-1 89.63s → 10.96s; load-balance |skew| **cùng opt-A** 1.86s → 1.21s (giảm 37%, over-correct đổi dấu). *Lưu ý skew: run baseline no-opt `m1_rv2` có |skew| tới 2.57s nhưng đó là mức chưa opt-A, không phải hiệu quả riêng của cân tải.*
+**Số dẫn xuất:** speedup nặng = 74.28/37.83 = **1.96×** (eff 98%); phân tán nhẹ = 11.34/14.48 = **0.78×** (thua, tức chậm 1.28×); GPU contention = T2/T1 = 71.9/34.1 = **2.11×** (test localhost; cross-check data commit solo/b2b = 72.3/34.6 = 2.09×); rendezvous round-1 89.63s → 10.96s; load-balance |skew| **cùng opt-A** 1.86s → 1.21s (giảm 37%, over-correct đổi dấu). *Lưu ý skew: run baseline no-opt `m1_rv2` có |skew| tới 2.57s nhưng đó là mức chưa opt-A, không phải hiệu quả riêng của cân tải.*
 
 **Số dẫn xuất all-reduce (§8):** Kiểu A vs federated **opt-A** = 291.0/212.9 = **1.37×** (1 máy), 316.8/210.6 = **1.50×** (2 máy); accuracy A = 82.06±0.30% (n=4 seed) ≈ federated seed-42 best 82.11% (chênh <0.1pp, trong dải seed); Kiểu B = 1575.8/212.9 = **7.4× chậm** hơn A; vs Centralized B1 = 540.8/210.6 = **2.57×** (nhưng 1-máy đã đạt 2.54× → chủ yếu là hiệu ứng utilization GPU, không phải phân tán). Sinh lại: `python allreduce_train.py --mode A|B ...` (xem docstring script cho lệnh 1-máy & 2-máy; backend gloo, cần `GLOO_SOCKET_IFNAME` + tắt IPv6 khi chạy 2 máy Windows).
 

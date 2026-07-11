@@ -75,6 +75,11 @@ def main():
 
     # Windows: PyTorch build không có libuv -> tắt để TCPStore chạy được.
     os.environ.setdefault("USE_LIBUV", "0")
+    # Đa máy: ép gloo dùng interface Ethernet (10.0.0.x) thay vì hostname.
+    # Không set thì gloo quảng bá hostname "admin" — trên MỖI máy "admin" resolve về
+    # chính nó -> 2 rank tự nối vào mình, rendezvous không bao giờ khớp. Bất đối xứng
+    # nếu chỉ 1 máy set env thủ công, nên nhúng thẳng vào script cho cả 2 cùng có.
+    os.environ.setdefault("GLOO_SOCKET_IFNAME", "Ethernet")
     os.environ["MASTER_ADDR"] = args.master_addr
     os.environ["MASTER_PORT"] = str(args.master_port)
 

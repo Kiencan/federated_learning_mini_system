@@ -20,8 +20,9 @@
 5. Hiệu năng nền (baseline nhẹ) — accuracy, thời gian, phân rã round, vì sao comm không phải bottleneck
 6. Tối ưu hiệu năng — rendezvous, overlap eval, polling, load balancing
 7. Nghiên cứu khả năng mở rộng (scaling nặng) — GPU contention, scale-up, strong scaling
-8. Thảo luận — bài học HPC, hạn chế, hướng mở rộng
-9. Kết luận · Tài liệu tham khảo · Phụ lục
+8. Kiến trúc điều phối — All-reduce phi tập trung vs Parameter-server
+9. Thảo luận — bài học HPC, hạn chế, hướng mở rộng
+10. Kết luận · Tài liệu tham khảo · Phụ lục
 
 ---
 
@@ -133,7 +134,7 @@ Hai máy dùng **GPU giống hệt**: NVIDIA **RTX 2000 Ada Generation**, Window
 | Máy 1 (server + client-0) | RTX 2000 Ada | **2.5.1+cu121** | **12.1** |
 | Máy 2 (client-1) | RTX 2000 Ada | 2.6.0+cu124 | 12.4 |
 
-GPU đồng nhất đảm bảo so sánh 1-máy vs 2-máy công bằng ở tầng phần cứng. **Lưu ý confound (xem §8):** Máy 1 chạy PyTorch cũ hơn (2.5.1 vs 2.6.0), nên một phần độ lệch "Máy 1 chậm hơn" (straggler) có thể đến từ **cả** phiên bản phần mềm **lẫn** tải server co-located — hai biến này chưa được tách trong thí nghiệm hiện tại.
+GPU đồng nhất đảm bảo so sánh 1-máy vs 2-máy công bằng ở tầng phần cứng. **Lưu ý confound (xem §9.2):** Máy 1 chạy PyTorch cũ hơn (2.5.1 vs 2.6.0), nên một phần độ lệch "Máy 1 chậm hơn" (straggler) có thể đến từ **cả** phiên bản phần mềm **lẫn** tải server co-located — hai biến này chưa được tách trong thí nghiệm hiện tại.
 
 ### 4.2 Mạng: Ethernet trực tiếp 2.5GbE
 
@@ -166,6 +167,8 @@ Con số throughput này quan trọng cho phân tích §5.4: link **thừa** bă
 | B3 Federated 2 máy | 82.11% | 81.73% |
 
 Ba kịch bản đạt accuracy **ngang nhau** (~81–82%). Với dữ liệu IID, FedAvg xấp xỉ tốt gradient descent tập trung — **phân tán không làm giảm chất lượng model**. Kết luận: chi phí của phân tán nằm ở *thời gian/điều phối*, không ở accuracy.
+
+> **Ghi chú ngân sách compute (multi-seed, n=4):** con số B1 = 81.17% ở trên hơi thấp vì phép so **chưa cân compute** — federated dùng `local_epochs=2` nên mỗi round bơm gấp đôi gradient work so với 1 epoch centralized. Cân lại (centralized **60 epoch** = cùng 3.000K image-pass) và đo **4 seed** (42/1/7/123) mỗi bên: centralized **81.72 ± 0.25%** vs federated **82.12 ± 0.17%** — chênh <0.5%, nằm trong nhiễu cộng hiệu ứng regularization nhẹ của model-averaging (Local-SGD). Kết luận parity **được củng cố** khi cân đúng ngân sách: phân tán *không* thắng cũng *không* thua centralized về chất lượng.
 
 ![Accuracy hội tụ theo round](figures/cifar_accuracy_per_round.png)
 
@@ -304,16 +307,84 @@ Cùng một hệ thống, cùng phần cứng — chỉ đổi độ nặng mode
 
 ---
 
-## 8. Thảo luận
+## 8. Kiến trúc điều phối: All-reduce phi tập trung vs Parameter-server
 
-### 8.1 Bài học HPC
+### 8.1 Câu hỏi & hai biến thể all-reduce
+
+Chương 5–7 dùng kiến trúc **parameter-server**: một server tập trung nhận update, chạy FedAvg, phát lại model. Câu hỏi HPC tự nhiên: **thay server tập trung bằng all-reduce ngang hàng (như DDP/Horovod) có nhanh hơn không?** All-reduce bỏ node server — mỗi node tự trao đổi và trung bình tham số — về lý thuyết tránh nút cổ chai băng thông server khi số node lớn.
+
+Ta cài `allreduce_train.py` (`torch.distributed`, backend gloo) với **hai biến thể**, giữ nguyên model/data/hyperparams để so tách bạch:
+- **Kiểu A — Local-SGD phi tập trung:** mỗi node train `local_epochs=2` trên shard, rồi **all-reduce trung bình model 1 lần/round**. Cấu trúc *giống hệt* federated (30 round × 2 local epoch), chỉ thay bước server-aggregate bằng all-reduce ngang hàng.
+- **Kiểu B — Data-parallel đồng bộ:** **all-reduce gradient MỖI mini-batch** (như DistributedDataParallel), 60 epoch để cân FLOPs.
+
+> *Ghi chú so sánh công bằng:* mọi con số crit-path dưới đây đều **loại evaluation** (all-reduce eval off-path). Do đó phải so với **federated opt-A** (§6, eval cũng off-path), **không** so với baseline (§5, eval on-path) — nếu không sẽ lệch kép: vừa lẫn eval, vừa so với bản chưa tối ưu.
+
+### 8.2 Kết quả: Kiểu A nhanh 1.37–1.50× ở accuracy y hệt
+
+Cùng phần cứng, cùng 3.000K image-pass budget, seed 42, crit-path (train + sync, loại eval):
+
+| Kiến trúc | crit-path | s/round | best acc |
+|---|---|---|---|
+| Federated opt-A (param-server, 1 máy) | 291.0s | 9.70s | ~82% |
+| Federated opt-A (param-server, 2 máy) | 316.8s | 10.56s | ~82% |
+| **All-reduce A (1 máy)** | **212.9s** | **7.10s** | 81.93% |
+| **All-reduce A (2 máy)** | **210.6s** | **7.02s** | 82.25% |
+
+**Speedup Kiểu A vs federated opt-A:** 1 máy **1.37×** (291→213s), 2 máy **1.50×** (317→211s). (So với baseline federated *chưa* opt-A thì tới **1.78×** trên 2 máy — nhưng đó là so với bản chưa tối ưu, không công bằng.)
+
+**Accuracy không đổi.** Multi-seed (n=4: seed 42/1/7/123): all-reduce A = **82.06 ± 0.30%** vs federated = **82.12 ± 0.17%** — chênh −0.06pp, Welch t = −0.35, **p = 0.73**, không phân biệt được về mặt thống kê. All-reduce cho *cùng chất lượng* ở tốc độ cao hơn.
+
+![All-reduce vs parameter-server: crit-path 1 máy / 2 máy](figures/cifar_allreduce_speedup.png)
+
+### 8.3 Vì sao nhanh hơn — cắt điều phối, KHÔNG phải giảm truyền thông
+
+Khác biệt **không** đến từ truyền thông (cả hai truyền cùng 2.38 MiB/round, <1% round như §5.4). Nó đến từ **chi phí điều phối** mà param-server gánh còn all-reduce tránh: **polling** (client poll `GetRoundStatus` mỗi 0.5s → độ trễ phát hiện round mới), **handshake tuần tự** (upload → server chờ đủ → aggregate → advance → poll → download), và **process server thứ ba** tranh CPU/GPU. All-reduce thay tất cả bằng **một barrier tức thì**. Điều này *nhất quán* với §5.3: bottleneck của param-server là **đồng bộ**, không phải communication — và all-reduce tấn công đúng bucket đó.
+
+**Điểm HPC cốt lõi — chi phí điều phối param-server TĂNG khi ra 2 máy, all-reduce PHẲNG:**
+
+| | 1 máy | 2 máy | thay đổi |
+|---|---|---|---|
+| Federated opt-A crit-path | 291.0s | 316.8s | **+9% tệ hơn** |
+| All-reduce A crit-path | 212.9s | 210.6s | **~0% (phẳng)** |
+
+Dù opt-A đã giảm mạnh gánh cross-machine của param-server, nó **vẫn** đội thêm ~9% khi ra 2 máy (Ethernet + Máy-1-kiêm-server + skew đồng bộ); all-reduce không đổi. Nên khoảng cách nới **1.37× → 1.50×**. Đây là minh hoạ cụ thể: **kiến trúc tập trung scale kém hơn về điều phối** — đúng động cơ ra đời của all-reduce ở quy mô lớn.
+
+### 8.4 Kiểu B chậm 7.4× — tần suất đồng bộ chi phối, không phải khối lượng
+
+| All-reduce | crit-path (60 epoch) | s/epoch |
+|---|---|---|
+| Kiểu B (all-reduce mỗi batch) | 1575.8s | 26.26s |
+
+Kiểu B đồng bộ **782 lần/epoch** thay vì 1 lần/round → **chậm 7.4× so với Kiểu A** (1575.8s vs 212.9s), dù cùng khối lượng compute. Bài học: **tần suất đồng bộ** (số lần barrier) chi phối chi phí, không phải **khối lượng** dữ liệu mỗi lần trao đổi. Kiểu B chỉ đáng dùng trên interconnect tốc độ cao (NVLink/InfiniBand) nơi đồng bộ mỗi step đủ rẻ — trên Ethernet thì phản tác dụng.
+
+![Toàn cảnh thời gian các kiến trúc (cùng 3000K budget, accuracy đều ~82%)](figures/cifar_allreduce_landscape.png)
+
+### 8.5 So với Centralized B1: 2.5× nhưng phần lớn là utilization, không phải phân tán
+
+So all-reduce với **centralized 1 máy** (B1, cùng 3.000K budget, train-only):
+
+| Cấu hình | thời gian | best acc |
+|---|---|---|
+| Centralized B1 (1 proc, 1 GPU) | 540.8s | 81.97% |
+| All-reduce A (1 máy, 2 proc, **1 GPU chung**) | 212.9s | 82.06% |
+| All-reduce A (2 máy, 2 GPU riêng) | 210.6s | 82.25% |
+
+All-reduce 2 máy nhanh **2.57×** so với B1 — nhưng **cú twist**: all-reduce **1 máy** (dùng đúng *cùng một GPU* với centralized) đã **2.54×** rồi; máy thứ hai chỉ thêm ~1%. Gần **toàn bộ** tốc độ đến từ throughput mỗi batch: **5.77 ms (1 process) → 2.27 ms (2 process đồng thời)** trên cùng GPU. CifarCNN nhẹ + batch 32 khiến GPU **nằm chờ** giữa các kernel (overhead Python/launch); 2 process xen kẽ lấp đầy khoảng trống → ~2.5× throughput.
+
+→ Nối lại §5–7: với **model nhẹ**, GPU thứ hai gần vô dụng (2.54 → 2.57×); "thắng 2.5× so với centralized" thực chất là **lấp đầy một GPU bị dùng thiếu** — đạt được ngay trên 1 máy bằng concurrency, **không** phải lợi ích phân tán. (ResNet nặng thì ngược lại: 1 process đã bão hoà GPU → concurrency serialize (contention 2.11×) → lúc đó GPU thứ hai mới thật sự có giá, §7.) *Công bằng mà nói:* 2.5× là so với centralized 1-process ngây thơ; một centralized tối ưu (batch lớn hơn, `torch.compile`, hoặc DataParallel) sẽ thu hẹp khoảng cách utilization này.
+
+---
+
+## 9. Thảo luận
+
+### 9.1 Bài học HPC
 
 - **Amdahl là có thật và đo được:** cùng hệ thống, phân tán thắng hay thua tuỳ tỷ lệ compute/điều phối. Model nhẹ → phần tuần tự (mạng+sync) lấn át → thua. Model nặng → phần song song (compute) lấn át → thắng 1.96×.
 - **Định vị bottleneck trước khi tối ưu:** trực giác "communication là rào cản" sai (comm <1% round). Đo đạc chỉ ra bottleneck thật là **GPU contention** + **sync skew** — nên các tối ưu nhắm đúng vào đó (rendezvous, overlap, load balancing) mới hiệu quả.
 - **Load balancing theo năng lực thực:** node kiêm việc phụ (server) phải nhận ít data hơn; cân theo throughput đo được, không theo số lượng danh nghĩa.
 - **Overlap để giấu latency:** đưa việc nặng không nằm trên đường phụ thuộc (eval) ra luồng nền giấu được ~15s/round — nguyên lý overlap compute/communication kinh điển của HPC.
 
-### 8.2 Hạn chế phương pháp
+### 9.2 Hạn chế phương pháp
 
 - Chỉ **2 node** — chưa quan sát được scaling khi $p > 2$ (nơi chi phí đồng bộ tăng phi tuyến).
 - **Confound phần mềm (§4.1):** Máy 1 chạy PyTorch 2.5.1+cu121, Máy 2 chạy 2.6.0+cu124. Độ lệch "Máy 1 straggler" (heavy: c0 36s vs c1 30s) do đó lẫn **hai biến** — server co-located **và** torch cũ hơn — chưa tách được. Cách khắc phục: đồng bộ version 2 máy rồi chạy lại, hoặc hoán đổi vai trò server giữa 2 máy để cô lập tác động. Không ảnh hưởng kết luận chính (speedup 1.96× vẫn đo strong-scaling giữa 2 GPU song song), nhưng làm nhiễu phân tích straggler/load-balancing (§6.4).
@@ -321,7 +392,7 @@ Cùng một hệ thống, cùng phần cứng — chỉ đổi độ nặng mode
 - Đo trên Windows + một loại GPU; kết quả có thể khác trên cluster Linux/InfiniBand (nơi communication rẻ hơn nữa, càng củng cố kết luận compute-bound).
 - Đồng hồ hệ thống Máy 1 từng lệch ngày ở một số run — nhưng mọi *thời lượng* đều đo bằng `perf_counter` (đơn điệu), không ảnh hưởng.
 
-### 8.3 Hướng mở rộng
+### 9.3 Hướng mở rộng
 
 - **Asynchronous FL** để loại barrier chờ straggler.
 - **Mixed precision (AMP)** giảm compute/round — sẽ *dịch* ngưỡng "đủ nặng để thắng" lên cao hơn.
@@ -330,15 +401,16 @@ Cùng một hệ thống, cùng phần cứng — chỉ đổi độ nặng mode
 
 ---
 
-## 9. Kết luận
+## 10. Kết luận
 
-Báo cáo xây dựng một hệ Federated Learning 2-node (gRPC + FedAvg) được đo đạc chi tiết, và dùng nó trả lời câu hỏi HPC trung tâm — **khi nào phân tán tăng tốc?** — qua 5 phát hiện định lượng:
+Báo cáo xây dựng một hệ Federated Learning 2-node (gRPC + FedAvg) được đo đạc chi tiết, và dùng nó trả lời câu hỏi HPC trung tâm — **khi nào phân tán tăng tốc?** — qua 6 phát hiện định lượng:
 
 1. **Lợi ích phân tán tỷ lệ với cường độ compute.** Model nhẹ (CifarCNN): phân tán **thua 1.28×** vì GPU chưa bão hoà. Model nặng (ResNet-18): phân tán **thắng 1.96×**, hiệu suất song song **98%** — strong scaling gần lý tưởng.
 2. **Nút cổ chai KHÔNG phải communication.** Truyền model chỉ chiếm ~0.3% (nhẹ) đến ~2% (nặng) thời gian round; link 2.5GbE (2.36 Gbps) thừa băng thông.
 3. **Bottleneck thật là tranh chấp GPU + đồng bộ.** GPU contention đo được **2.11×** khi 2 client chung 1 GPU; cấp mỗi client một GPU riêng (B3) giải phóng nút này.
 4. **Chi phí điều phối triệt tiêu được bằng tối ưu hệ thống.** Rendezvous (round đầu 89.6s→11s), overlap eval (giấu ~15s/round), giảm poll-wait, load balancing — khép chênh round B3−B2 (nhẹ) từ **3.14s về 0.08s**.
 5. **Định luật Amdahl được minh hoạ định lượng.** Phần tuần tự (điều phối) chỉ ~2% ở chế độ nặng → phân tán chỉ đáng giá khi compute song song hoá đủ lớn để lấn át phần tuần tự này.
+6. **Kiến trúc điều phối cũng quyết định tốc độ, không chỉ cường độ compute.** Thay parameter-server bằng **all-reduce phi tập trung** (local-SGD) nhanh **1.37× (1 máy) → 1.50× (2 máy)** ở accuracy y hệt (n=4 seed, p=0.73), nhờ cắt chi phí điều phối server (poll + handshake) — chi phí này *vẫn tăng ~9%* khi ra 2 máy dù đã opt-A, còn all-reduce phẳng. Ngược lại, all-reduce **mỗi batch** chậm **7.4×**: tần suất đồng bộ chi phối, không phải khối lượng. (§8)
 
 Cặp kết quả **"nhẹ thua / nặng thắng"** trả lời trực tiếp câu hỏi nghiên cứu và đúng bối cảnh thực tế: model production lớn hơn CifarCNN nhiều lần nên bão hoà GPU và hưởng lợi từ phân tán — miễn là chi phí điều phối được kiểm soát.
 
@@ -369,7 +441,15 @@ Mọi con số trong báo cáo truy về đúng một run dưới `Report/data/`
 | B3 heavy | `exp_cifar_heavy_2machine/m1_heavy` | ResNet-18 | 1×10 | 37.83s/round · acc 84.71% |
 | Rendezvous OFF | `exp_cifar_fed_2machine/m1` | CifarCNN | 2×30 | round-1 = 89.63s (cold) |
 | Load-balance 45/55 | `exp_cifar_fed_2machine/m1_optB` | CifarCNN | 2×30 | mean skew −1.21s |
+| B1 fair budget (n=4) | `exp_cifar_centralized/m1_le2fair{,_s1,_s7,_s123}` | CifarCNN | 60 epoch | 81.72±0.25% · train 540.8s |
+| Fed opt-A B2 | `exp_cifar_fed_1machine/m1_opt` | CifarCNN | 2×30 | 9.70s/round (eval off-path) |
+| Fed opt-A B3 | `exp_cifar_fed_2machine/m1_opt5` | CifarCNN | 2×30 | 10.56s/round (eval off-path) |
+| All-reduce A 1máy (n=4) | `exp_cifar_allreduce/A_s{42,1,7,123}` | CifarCNN | 30×2 | 82.06±0.30% · crit-path 212.9s |
+| All-reduce A 2máy | `exp_cifar_allreduce/A_2m_s42` | CifarCNN | 30×2 | 82.25% · crit-path 210.6s |
+| All-reduce B | `exp_cifar_allreduce/B_s42` | CifarCNN | 60 epoch | 82.33% · 1575.8s (chậm 7.4×) |
 
 **Số dẫn xuất:** speedup nặng = 74.28/37.83 = **1.96×** (eff 98%); phân tán nhẹ = 11.34/14.48 = **0.78×** (thua, tức chậm 1.28×); GPU contention = T2/T1 = 72.3/34.1 = **2.11×** (committed solo/b2b, steady); rendezvous round-1 89.63s → 10.96s; load-balance |skew| **cùng opt-A** 1.86s → 1.21s (giảm 37%, over-correct đổi dấu). *Lưu ý skew: run baseline no-opt `m1_rv2` có |skew| tới 2.57s nhưng đó là mức chưa opt-A, không phải hiệu quả riêng của cân tải.*
+
+**Số dẫn xuất all-reduce (§8):** Kiểu A vs federated **opt-A** = 291.0/212.9 = **1.37×** (1 máy), 316.8/210.6 = **1.50×** (2 máy); accuracy A = 82.06±0.30% vs federated 82.12±0.17% (Welch p=0.73, ngang); Kiểu B = 1575.8/212.9 = **7.4× chậm** hơn A; vs Centralized B1 = 540.8/210.6 = **2.57×** (nhưng 1-máy đã đạt 2.54× → chủ yếu là hiệu ứng utilization GPU, không phải phân tán). Sinh lại: `python allreduce_train.py --mode A|B ...` (xem docstring script cho lệnh 1-máy & 2-máy; backend gloo, cần `GLOO_SOCKET_IFNAME` + tắt IPv6 khi chạy 2 máy Windows).
 
 *Chi tiết triển khai FL gốc (MNIST, 5 vấn đề distributed systems) trong `Report/bao_cao_cuoi_ky.md` và `milestone_report.md`. Đo throughput mạng: `tools/throughput_test.py`.*

@@ -1,0 +1,16 @@
+{
+  "start_time": "2026-07-10T00:12:59",
+  "git_commit": "1014119",
+  "config_snapshot": "results\\exp_cifar_centralized\\m1_le2fair\\config.yaml",
+  "nodes": [
+    {
+      "role": "centralized_trainer",
+      "hostname": "admin",
+      "torch_version": "2.5.1+cu121",
+      "device": "cuda",
+      "cuda_available": true,
+      "gpu_name": "NVIDIA RTX 2000 Ada Generation",
+      "cuda_version": "12.1"
+    }
+  ]
+}
